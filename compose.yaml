@@ -1,0 +1,24 @@
+services:
+  kopeyka:
+    build: .
+    image: kopeyka:local
+    ports:
+      - "127.0.0.1:${KOPEYKA_PORT:-8502}:8501"
+    volumes:
+      - kopeyka-data:/app/runtime
+    environment:
+      KOPEYKA_STORAGE: /app/runtime/jobs
+      OMP_THREAD_LIMIT: "1"
+    restart: unless-stopped
+    read_only: true
+    tmpfs:
+      - /tmp:size=512m,mode=1777
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    mem_limit: 2g
+    cpus: 2
+    pids_limit: 256
+volumes:
+  kopeyka-data:

@@ -89,7 +89,11 @@ def stage_uploads(report, uploads, directory: Path) -> tuple[Path, list[Path], l
         if reason:
             journal.append({"file": name, "status": "excluded", "reason": reason, "code": "", "amount": None})
             return
-        validate_content(name, data)
+        try:
+            validate_content(name, data)
+        except ValueError as exc:
+            journal.append({'file': name, 'status': 'error', 'reason': str(exc), 'code': None, 'amount': None})
+            return
         folder = directory / "documents" / f"{entry_count:04d}"
         folder.mkdir(parents=True, exist_ok=True)
         target = folder / safe_name(name)

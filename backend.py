@@ -2,21 +2,26 @@
 import json
 import os
 import re
+import shutil
+from copy import deepcopy
+from threading import RLock
 from datetime import datetime, timezone
 from pathlib import Path
 from uuid import uuid4
 
 from fastapi import FastAPI, File, Form, HTTPException, UploadFile, Request
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, Response
 from fastapi.staticfiles import StaticFiles
 from fastapi.encoders import jsonable_encoder
 from starlette.concurrency import run_in_threadpool
 
 from kfz_core import reconcile, ReportSelectionRequired
+from kfz_core.review import build_review, compare_results, rub
 from ui.uploads import stage_uploads
 
 app = FastAPI()
 sessions = {}
+mutation_lock = RLock()
 STORE = Path(os.environ.get('KOPEYKA_STORAGE', 'runtime/jobs')).resolve()
 STORE.mkdir(parents=True, exist_ok=True)
 for manifest in STORE.glob('*/job.json'):
@@ -34,9 +39,55 @@ for manifest in STORE.glob('*/job.json'):
 
 def save(job):
     target = job['base'] / 'job.json'
-    pending = target.with_suffix('.tmp')
+    pending = target.with_suffix('.' + uuid4().hex + '.tmp')
     pending.write_text(json.dumps(jsonable_encoder(job), ensure_ascii=False), encoding='utf-8')
     pending.replace(target)
+
+
+def version_info(sid, job):
+    return {'session': sid, 'root': job.get('root', sid), 'parent': job.get('parent'),
+            'version': job.get('version', 1), 'created': job['created'], 'status': job.get('status'),
+            'operation': job.get('operation', 'Первичная сверка')}
+
+
+def payload(sid, job):
+    result = deepcopy(job.get('result'))
+    if result:
+        result['review'] = build_review(result)
+    root = job.get('root', sid)
+    versions = sorted([version_info(key, item) for key, item in list(sessions.items())
+                       if item.get('root', key) == root and item.get('owner') == job['owner']], key=lambda v: v['version'])
+    parent = sessions.get(job.get('parent'))
+    return {'session': sid, 'result': result, 'candidates': job.get('candidates', []),
+            'version': version_info(sid, job), 'versions': versions, 'drafts': job.get('drafts', {}),
+            'comparison': compare_results(parent['result'], result) if parent and parent.get('result') and result else None}
+
+
+def fork_job(parent_id, parent, operation):
+    sid = uuid4().hex
+    base = STORE / sid
+    base.mkdir(mode=0o700)
+    root = parent.get('root', parent_id)
+    version = max(j.get('version', 1) for key, j in list(sessions.items()) if j.get('root', key) == root) + 1
+    report_dir = base / 'input' / 'report'
+    report_dir.mkdir(parents=True)
+    report = report_dir / parent['report'].name
+    shutil.copy2(parent['report'], report)
+    paths = []
+    for index, old in enumerate(parent['documents']):
+        folder = base / 'input' / 'documents' / f'{index:04d}'
+        folder.mkdir(parents=True)
+        target = folder / old.name
+        shutil.copy2(old, target)
+        paths.append(target)
+    job = {'owner': parent['owner'], 'created': datetime.now(timezone.utc).isoformat(),
+           'base': base, 'report': report, 'documents': paths, 'journal': deepcopy(parent['journal']),
+           'contract': parent['contract'], 'start': parent['start'], 'end': parent['end'],
+           'root': root, 'parent': parent_id, 'version': version, 'operation': operation, 'status': 'Обработка',
+           'decisions': deepcopy(parent.get('decisions', {})), 'row_id': parent.get('row_id')}
+    sessions[sid] = job
+    save(job)
+    return sid, job
 
 
 @app.middleware('http')
@@ -62,15 +113,15 @@ def owned(session, request):
 
 @app.get('/api/history')
 def history(request: Request):
-    return sorted([{'session': sid, 'created': j['created'], 'contract': j['contract'],
-                    'status': j.get('status', 'Завершена')} for sid, j in sessions.items()
+    return sorted([{**version_info(sid, j), 'contract': j['contract'],
+                    'status': j.get('status', 'Завершена')} for sid, j in list(sessions.items())
                    if j.get('owner') == request.state.owner], key=lambda j: j['created'], reverse=True)
 
 
 @app.get('/api/session/{session}')
 def restore(session: str, request: Request):
     job = owned(session, request)
-    return {'session': session, 'result': job.get('result'), 'candidates': job.get('candidates', [])}
+    return jsonable_encoder(payload(session, job))
 
 
 class Upload:
@@ -98,9 +149,10 @@ def calculate(job, row_id=None, decisions=None):
             row['status'] = 'Недостаточно данных'
             row.setdefault('reasons', []).append('Часть комплекта не прочитана: ' + ', '.join(failures))
     job['result'] = result
-    job['row_id'] = row_id
+    job['row_id'] = result['context']['report_row_id']
     job['decisions'] = decisions or {}
     job['status'] = 'Завершена'
+    job.pop('candidates', None)
     save(job)
     return {'result': result}
 
@@ -120,11 +172,13 @@ async def check(request: Request, report: UploadFile = File(...), documents: lis
         files = [Upload(f.filename, await f.read()) for f in documents]
         report_path, paths, journal = stage_uploads(report_file, files, base / 'input')
         job = {'owner': request.state.owner, 'created': datetime.now(timezone.utc).isoformat(),
-               'status': 'Обработка', 'base': base, 'report': report_path, 'documents': paths,
+               'status': 'Обработка', 'root': session, 'version': 1, 'operation': 'Первичная сверка',
+               'base': base, 'report': report_path, 'documents': paths,
                'journal': journal, 'contract': contract, 'start': start, 'end': end}
         sessions[session] = job
         save(job)
-        return jsonable_encoder({'session': session, **await run_in_threadpool(calculate, job)})
+        await run_in_threadpool(calculate, job)
+        return jsonable_encoder(payload(session, job))
     except Exception as exc:
         if session in sessions:
             sessions[session]['status'] = 'Ошибка обработки'
@@ -135,15 +189,69 @@ async def check(request: Request, report: UploadFile = File(...), documents: lis
 @app.post('/api/session/{session}/recalculate')
 def recalculate(session: str, body: dict, request: Request):
     job = owned(session, request)
-    if not job:
-        raise HTTPException(404, 'Сессия завершена. Загрузите документы снова.')
+    with mutation_lock:
+        parent = job if job.get('result') else None
+        try:
+            if job.get('result'):
+                session, job = fork_job(session, job, 'Ручное решение проверяющего')
+            decisions = dict(job.get('decisions', {}))
+            if body.get('document_id'):
+                decisions[body['document_id']] = body['decision']
+            calculate(job, body.get('row_id', job.get('row_id')), decisions)
+            return jsonable_encoder(payload(session, job))
+        except Exception as exc:
+            if job is not parent:
+                job['status'] = 'Ошибка обработки'
+                save(job)
+            raise HTTPException(400, str(exc)) from exc
+
+
+def add_documents(session, parent, files, note):
+    with mutation_lock:
+        sid, job = fork_job(session, parent, 'Добавление документов' + (': ' + note.strip()[:200] if note.strip() else ''))
+        try:
+            _, paths, journal = stage_uploads(Upload(job['report'].name, job['report'].read_bytes()), files, job['base'] / 'addition')
+            all_paths = [*job['documents'], *paths]
+            if len(all_paths) > 500 or sum(p.stat().st_size for p in all_paths) > 250 * 1024 * 1024:
+                raise ValueError('Полный комплект версии превышает 500 файлов или 250 МБ')
+            job['documents'] = all_paths
+            job['journal'].extend(journal)
+            job['added_files'] = [f.name for f in files]
+            calculate(job, job.get('row_id'), job.get('decisions'))
+            return jsonable_encoder(payload(sid, job))
+        except Exception:
+            job['status'] = 'Ошибка обработки'
+            save(job)
+            raise
+
+
+@app.post('/api/session/{session}/documents')
+async def append_documents(session: str, request: Request, documents: list[UploadFile] = File(...), note: str = Form('')):
+    parent = owned(session, request)
+    if not parent.get('result'):
+        raise HTTPException(409, 'Сначала завершите исходную сверку')
+    if len(documents) > 500 or sum(f.size or 0 for f in documents) > 250 * 1024 * 1024:
+        raise HTTPException(413, 'Лимит: 500 файлов и 250 МБ')
+    files = [Upload(f.filename, await f.read()) for f in documents]
     try:
-        decisions = dict(job.get('decisions', {}))
-        if body.get('document_id'):
-            decisions[body['document_id']] = body['decision']
-        return jsonable_encoder(calculate(job, body.get('row_id', job.get('row_id')), decisions))
+        return await run_in_threadpool(add_documents, session, parent, files, note)
     except Exception as exc:
         raise HTTPException(400, str(exc)) from exc
+
+
+@app.put('/api/session/{session}/request/{code}')
+def save_request(session: str, code: str, body: dict, request: Request):
+    job = owned(session, request)
+    if not job.get('result') or code not in {r['code'] for r in job['result']['rows']}:
+        raise HTTPException(404, 'Статья не найдена')
+    subject, text = body.get('subject'), body.get('text')
+    if not isinstance(subject, str) or not isinstance(text, str) or not text.strip() or len(text) > 30000 or len(subject) > 500:
+        raise HTTPException(400, 'Заполните текст запроса (до 30 000 символов) и тему (до 500 символов)')
+    with mutation_lock:
+        draft = {'subject': subject, 'text': text, 'saved_at': datetime.now(timezone.utc).isoformat(), 'status': 'Черновик сохранён'}
+        job.setdefault('drafts', {})[code] = draft
+        save(job)
+    return draft
 
 
 @app.get('/api/session/{session}/evidence/{evidence_id}/{kind}')
@@ -155,6 +263,29 @@ def evidence(session: str, evidence_id: str, kind: str, request: Request):
     if not path or not path.is_file() or not path.resolve().is_relative_to(job['base'].resolve()):
         raise HTTPException(404, 'Файл недоступен')
     return FileResponse(path, filename=path.name if kind == 'original' else None)
+
+
+@app.get('/api/session/{session}/conclusion')
+def conclusion(session: str, request: Request):
+    job = owned(session, request)
+    result = job.get('result')
+    if not result:
+        raise HTTPException(409, 'Проверка ещё не завершена')
+    review = build_review(result)
+    lines = ['КОПЕЙКА — ЗАКЛЮЧЕНИЕ ПО СВЕРКЕ', f"Версия {job.get('version', 1)} от {job['created']}",
+             f"Договор {job['contract']}; период {job['start']} — {job['end']}", '', review['conclusion'], review['scope'], '']
+    for row in result['rows']:
+        item = review['rows'][row['code']]
+        lines += [f"{row['code']} {row['title']} — {row['status']}",
+                  f"КФЗ: {rub(row['reported'])}; документы: {rub(row['confirmed'])}; разница: {rub(row['difference'])}",
+                  'Категория: ' + ', '.join(item['categories']), item['statement'], item['cause'],
+                  'КФЗ: ' + item['report_source'], *[f"Источник: {s['location']} — {rub(s['value'])}" for s in item['sources']],
+                  *row.get('reasons', []), '']
+    lines += ['ИСКЛЮЧЕНИЯ И НЕПРОВЕРЕННЫЕ ДОКУМЕНТЫ',
+              *[f"{d['file']} — {d['category']}: {d['reason']}" for d in review['document_issues']], '',
+              'ОГРАНИЧЕНИЯ', *result.get('limitations', [])]
+    return Response('\ufeff' + '\n'.join(lines), media_type='text/plain; charset=utf-8',
+                    headers={'Content-Disposition': f'attachment; filename="kopeyka-conclusion-v{job.get("version", 1)}.txt"'})
 
 
 if Path('frontend/dist').is_dir():
