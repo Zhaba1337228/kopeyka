@@ -12,6 +12,26 @@ MAX_FILES = 500
 MAX_TOTAL_BYTES = 250 * 1024 * 1024
 
 
+def validate_content(name: str, data: bytes) -> None:
+    suffix = Path(name).suffix.lower()
+    valid = {'.pdf': data.startswith(b'%PDF-'), '.png': data.startswith(b'\x89PNG\r\n\x1a\n'),
+             '.jpg': data.startswith(b'\xff\xd8\xff'), '.jpeg': data.startswith(b'\xff\xd8\xff')}
+    if suffix in valid and not valid[suffix]:
+        raise ValueError('Содержимое файла не соответствует формату: ' + name)
+    if suffix in {'.xlsx', '.docx'}:
+        try:
+            with zipfile.ZipFile(io.BytesIO(data)) as archive:
+                members = archive.infolist()
+                if len(members) > 10000 or sum(i.file_size for i in members) > MAX_TOTAL_BYTES:
+                    raise ValueError('Слишком большой распакованный документ Office')
+                names = {i.filename for i in members}
+                required = 'xl/workbook.xml' if suffix == '.xlsx' else 'word/document.xml'
+                if required not in names or any('vbaproject' in n.lower() for n in names):
+                    raise ValueError('Неверный формат Office или документ содержит макросы')
+        except zipfile.BadZipFile as exc:
+            raise ValueError('Повреждённый документ Office: ' + name) from exc
+
+
 def archive_name(info: zipfile.ZipInfo) -> str:
     name = info.filename
     if not info.flag_bits & 0x800:
@@ -47,6 +67,9 @@ def stage_uploads(report, uploads, directory: Path) -> tuple[Path, list[Path], l
     report_dir.mkdir(exist_ok=True)
     report_path = report_dir / safe_name(report.name)
     report_data = report.getvalue()
+    if len(report_data) > MAX_TOTAL_BYTES or report_path.suffix.lower() not in {'.pdf', '.png', '.jpg', '.jpeg'}:
+        raise ValueError('Неверный формат или размер карточки КФЗ')
+    validate_content(report_path.name, report_data)
     report_path.write_bytes(report_data)
     report_hash = hashlib.sha256(report_data).digest()
     paths: list[Path] = []
@@ -66,6 +89,7 @@ def stage_uploads(report, uploads, directory: Path) -> tuple[Path, list[Path], l
         if reason:
             journal.append({"file": name, "status": "excluded", "reason": reason, "code": "", "amount": None})
             return
+        validate_content(name, data)
         folder = directory / "documents" / f"{entry_count:04d}"
         folder.mkdir(parents=True, exist_ok=True)
         target = folder / safe_name(name)
