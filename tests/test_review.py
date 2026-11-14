@@ -36,6 +36,11 @@ class ReviewTests(unittest.TestCase):
         self.assertTrue(compared['rows'][0]['resolved'])
         self.assertEqual(compared['added_documents'], [])
 
+    def test_incomplete_total_prevents_a_complete_conclusion(self):
+        result = self.result('Совпадает', '0.00')
+        result['total'] = {'status': 'Недостаточно данных'}
+        self.assertIn('недостаточно', build_review(result)['conclusion'])
+
 
 if __name__ == '__main__':
     unittest.main()

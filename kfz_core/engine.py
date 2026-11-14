@@ -11,8 +11,8 @@ from pathlib import Path
 from .extract import extract, file_hash, make_evidence, render_evidence
 from .money import MONEY_PATTERN, amount_text, money, unit_multiplier
 from .report import ReportSelectionRequired, inspect_report
+from .articles import KNOWN_TITLES, explicit_codes, title_for
 
-ARTICLES = {'0200': 'Оплата труда', '0300': 'Страховые взносы', '0800': 'Общепроизводственные расходы', '0900': 'Общехозяйственные расходы'}
 MONTHS = ['январ', 'феврал', 'март', 'апрел', 'ма[йя]', 'июн', 'июл', 'август', 'сентябр', 'октябр', 'ноябр', 'декабр']
 MONTH_LABELS = ['январь', 'февраль', 'март', 'апрель', 'май', 'июнь', 'июль', 'август', 'сентябрь', 'октябрь', 'ноябрь', 'декабрь']
 
@@ -48,6 +48,9 @@ def _date(value):
 
 
 def _classify(text, rules):
+    stated = explicit_codes(text)
+    if stated:
+        return stated[0] if len(stated) == 1 else None
     normalized = _normalize(text)
     codes = [code for code, words in rules.items() if any(word.casefold() in normalized for word in words)]
     return codes[0] if len(codes) == 1 else None
@@ -113,7 +116,24 @@ def _read_amounts(path, doc_id, extracted, meta):
             line = {'text': f"Начислено взносов: {value}; база начислений A6: {sheet.get('A6')}", 'sheet': 'Расчет взносов', 'cell': 'B6'}
             evidence.append(make_evidence(path, doc_id, line, parsed, f"{meta.get('number') or 'Взносы'} · B6", 0))
         else:
-            raise ValueError('Книга не соответствует поддерживаемой форме ведомости или расчёта взносов')
+            from openpyxl.utils.cell import coordinate_from_string, column_index_from_string, get_column_letter
+            candidates = []
+            for sheet_name, sheet in sheets.items():
+                for address, label in sheet.items():
+                    if not isinstance(label, str) or not re.fullmatch(r'\s*(?:итого|всего|к оплате|сумма|стоимость)(?:\s*[,:(].*)?\s*', label, re.I):
+                        continue
+                    column, row = coordinate_from_string(address)
+                    target = get_column_letter(column_index_from_string(column)+1) + str(row)
+                    value = sheet.get(target)
+                    if isinstance(value, bool) or value is None or (isinstance(value, str) and not MONEY_PATTERN.fullmatch(value.strip())):
+                        continue
+                    line = {'sheet': sheet_name, 'cell': target, 'text': f'{address}: {label}; {target}: {value}'}
+                    candidates.append((line, money(value)*unit_multiplier(label), bool(re.search(r'итого|всего|к оплате', label, re.I))))
+            preferred = [v for v in candidates if v[2]] or candidates
+            if len(preferred) != 1:
+                raise ValueError('В XLSX не найдена единственная итоговая сумма рядом с подписью «Итого», «Сумма» или «К оплате»; требуется уточнение формы')
+            line, parsed, _ = preferred[0]
+            evidence.append(make_evidence(path, doc_id, line, parsed, 'Итог документа', 0))
     else:
         candidates = []
         for line in extracted['lines']:
@@ -171,6 +191,7 @@ def reconcile(kfz_path, document_paths, *, output_dir=None, contract='24/03/15-0
     selected = next((row for row in candidates if row['id'] == report_row_id), None) if report_row_id else candidates[0]
     if selected is None:
         raise ValueError('Выбранная строка КФЗ не найдена')
+    articles = dict(selected.get('articles') or {code: title_for(code) for code in selected['values'] if code != 'total'})
     report_reasons = list(selected['errors'])
     if not selected.get('contract'):
         report_reasons.append('Не удалось прочитать договор в КФЗ')
@@ -196,9 +217,6 @@ def reconcile(kfz_path, document_paths, *, output_dir=None, contract='24/03/15-0
             if re.search(r'НАБОР ДАННЫХ ДЛЯ КЕЙСА', extracted['text'], re.I):
                 record.update(status='excluded', reason='Описание набора данных; не подтверждающий документ')
                 continue
-            if extracted['kind'] == 'xlsx' and not set(extracted['sheets']) & {'Ведомость', 'Расчет взносов'}:
-                record.update(status='excluded', reason='Книга не является поддерживаемой первичкой (ведомость / расчёт взносов)')
-                continue
             meta = _metadata(extracted, rules)
             record.update(meta)
             # Metadata controls inclusion even if the document contains a valid amount.
@@ -217,8 +235,11 @@ def reconcile(kfz_path, document_paths, *, output_dir=None, contract='24/03/15-0
             record['amount'] = amount
             record['evidence_ids'] = [ev['id'] for ev in refs]
             evidence.update({ev['id']: ev for ev in refs})
+            declared = explicit_codes(extracted['text'])
             if exclusion:
                 record.update(status='excluded', reason=exclusion)
+            elif len(declared) > 1 or (declared and record['code'] != declared[0]):
+                record.update(status='ambiguous', code=None, reason='В документе несколько статей либо код противоречит распознанной форме; требуется решение')
             elif not record['contract']:
                 record.update(reason='Не найден единственный договор; требуется проверка реквизитов')
             elif not record['period_start']:
@@ -229,12 +250,17 @@ def reconcile(kfz_path, document_paths, *, output_dir=None, contract='24/03/15-0
                 record.update(reason='Не найден контрагент; требуется проверка реквизитов')
             elif not record['code']:
                 record.update(reason='Назначение неоднозначно или отсутствует в словаре статей')
+            elif record['code'] not in articles:
+                record.update(reason='Код статьи документа не найден в КФЗ; требуется проверка привязки')
             else:
                 record.update(status='accepted', reason=f"Договор, период и назначение подтверждены; {record['date_rule']}")
         except Exception as error:
             record.update(status='error', reason=f'Не удалось прочитать документ: {error}')
             if not record['id']:
                 record['id'] = f'error-{index}'
+    for record in documents:
+        if record.get('code') and record['status'] != 'excluded' and record['code'] not in articles:
+            articles[record['code']] = title_for(record['code'])
     # Same requisites with different amounts are a conflict, never silently deduplicated.
     semantic_groups = {}
     for record in documents:
@@ -262,7 +288,7 @@ def reconcile(kfz_path, document_paths, *, output_dir=None, contract='24/03/15-0
         if action == 'exclude':
             record.update(status='excluded', reason='Решение проверяющего: ' + decision['reason'])
         elif action == 'include':
-            if record['amount'] is None or decision.get('code') not in ARTICLES:
+            if record['amount'] is None or decision.get('code') not in articles:
                 raise ValueError('Для включения необходимы прочитанная сумма и допустимая статья')
             if record.get('duplicate_of'):
                 raise ValueError('Нельзя повторно включить дубликат; работайте с исходным документом')
@@ -278,8 +304,14 @@ def reconcile(kfz_path, document_paths, *, output_dir=None, contract='24/03/15-0
             reviewed_groups.setdefault(_identity_key(record), []).append(record)
     if any(len(group) > 1 for group in reviewed_groups.values()):
         raise ValueError('Совпадают реквизиты нескольких включённых документов. Выберите один документ, остальные исключите с причиной.')
+    # Rebuild after review: a corrected or excluded assignment must not leave a
+    # phantom article in the totals merely because it was a prior suggestion.
+    articles = dict(selected.get('articles') or {code: title_for(code) for code in selected['values'] if code != 'total'})
+    for record in documents:
+        if record.get('code') and record['status'] != 'excluded':
+            articles.setdefault(record['code'], title_for(record['code']))
     rows = []
-    for code, title in ARTICLES.items():
+    for code, title in sorted(articles.items()):
         accepted = [r for r in documents if r['code'] == code and r['status'] == 'accepted']
         refs = [ref for r in accepted for ref in r['evidence_ids']]
         confirmed = sum((money(r['amount']) for r in accepted), Decimal(0))
@@ -289,6 +321,8 @@ def reconcile(kfz_path, document_paths, *, output_dir=None, contract='24/03/15-0
             reasons.append(selected['column_errors'][code])
         uncertain = [r for r in documents if r['status'] in ('error', 'ambiguous') and r['code'] in (None, code)]
         reasons.extend(f"{r['file']}: {r['reason']}" for r in uncertain)
+        if not accepted and code not in ('0200', '0300') and (code not in KNOWN_TITLES or reported is None or money(reported) != 0):
+            reasons.append('Нет принятых подтверждающих документов по статье; отсутствие файлов не считается нулевыми расходами')
         if code in ('0200', '0300'):
             present = {r['period_start'][:7] for r in accepted if r.get('period_start')}
             missing = [month for month in _expected_months(start, end) if month not in present]
@@ -318,6 +352,6 @@ def reconcile(kfz_path, document_paths, *, output_dir=None, contract='24/03/15-0
             render_evidence(ev, out / 'evidence')
         except Exception as error:
             ev['render_error'] = str(error)
-    result = {'context': {'contract': contract, 'start_date': str(start), 'end_date': str(end), 'stage': 3, 'year': start.year, 'report_row_id': selected['id'], 'report_row_label': selected['label']}, 'rows': rows, 'total': total, 'documents': documents, 'evidence': evidence, 'candidate_rows': [{'id': c['id'], 'label': c['label']} for c in candidates], 'limitations': ['Полнота разовых актов без реестра не проверена. Вывод относится к принятым документам.', 'Трудоёмкость и материальные затраты не подтверждены отдельными источниками.', 'C6 подтверждает основную зарплату. C7 подтверждает доплаты и резерв вместе; раздельные показатели дополнительных начислений и резерва не проверены.', 'Детальная разбивка страховых взносов не проверена. Для причины расхождения требуется регистр формирования КФЗ.']}
+    result = {'context': {'contract': contract, 'start_date': str(start), 'end_date': str(end), 'stage': 3, 'year': start.year, 'report_row_id': selected['id'], 'report_row_label': selected['label']}, 'rows': rows, 'total': total, 'documents': documents, 'evidence': evidence, 'candidate_rows': [{'id': c['id'], 'label': c['label']} for c in candidates], 'limitations': ['Полнота разовых актов без реестра не проверена. Вывод относится к принятым документам.', 'Статьи определяются по кодам в отчёте и документах. Неоднозначная привязка и непрочитанные суммы требуют уточнения; трудоёмкость не сверяется.', 'C6 подтверждает основную зарплату. C7 подтверждает доплаты и резерв вместе; раздельные показатели дополнительных начислений и резерва не проверены.', 'Детальная разбивка страховых взносов не проверена. Для причины расхождения требуется регистр формирования КФЗ.']}
     progress(1.0, 'Сверка завершена')
     return result

@@ -1,0 +1,34 @@
+import {test, expect} from '@playwright/test';
+import path from 'node:path';
+
+const input=process.env.KOPEYKA_TEST_ARTICLES;
+test.skip(!input,'Generate synthetic fixtures with tests/new_articles_fixtures.py');
+test('unseen articles, manual classification and new article in a version',async({page})=>{
+  test.setTimeout(180000);
+  page.setDefaultTimeout(15000);
+  const errors=[];page.on('pageerror',e=>errors.push(e.message));
+  await page.goto(process.env.KOPEYKA_TEST_URL||'http://127.0.0.1:8503');
+  await page.getByLabel('Карточка КФЗ',{exact:true}).setInputFiles(path.join(input,'report.pdf'));
+  await page.getByLabel('Подтверждающие документы',{exact:true}).setInputFiles(['0400','0500','0600','0700'].map(c=>path.join(input,c+'.docx')));
+  await page.getByRole('button',{name:'Начать сверку'}).click();
+  await expect(page.getByRole('heading',{name:'Результаты сверки',exact:true})).toBeVisible({timeout:120000});
+  await expect(page.getByRole('button',{name:'0400 Тестовая статья 4',exact:true})).toBeVisible();
+  await expect(page.locator('.review-conclusion')).toContainText('0400, 0500, 0600, 0700');
+  await page.getByRole('button',{name:/^Документы/}).click();
+  await page.getByLabel('Документ',{exact:true}).selectOption({label:'0400.docx'});
+  await page.getByLabel('Решение',{exact:true}).selectOption('0400');
+  await page.getByLabel('Основание',{exact:true}).fill('Статья подтверждена проверяющим по регистру');
+  await page.getByRole('button',{name:'Сохранить и пересчитать'}).click();
+  await expect(page.getByRole('heading',{name:'Что изменилось · версия 1 → 2'})).toBeVisible({timeout:120000});
+  await expect(page.locator('.review-conclusion')).toContainText('Суммы проверяемых статей согласуются');
+  await page.getByRole('tab',{name:'3. Добавить ответ'}).click();
+  await page.getByLabel('Дополнительные документы',{exact:true}).setInputFiles(path.join(input,'1500.docx'));
+  await page.getByRole('button',{name:'Добавить и сравнить версии'}).click();
+  await expect(page.getByRole('heading',{name:'Что изменилось · версия 2 → 3'})).toBeVisible({timeout:120000});
+  const added=page.locator('.comparison-table tr').filter({hasText:'1500'});
+  await expect(added).toContainText('Нет статьи в версии');
+  await expect(added).toContainText('Недостаточно данных');
+  await expect(page.getByRole('button',{name:'1500 Статья 1500',exact:true})).toBeVisible();
+  await page.screenshot({path:'../outputs/new-articles.png',fullPage:true});
+  expect(errors).toEqual([]);
+});

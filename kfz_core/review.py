@@ -39,8 +39,10 @@ def build_review(result):
     matched, mismatch, unknown = (counts[s] for s in ('Совпадает', 'Расхождение', 'Недостаточно данных'))
     if mismatch:
         conclusion = 'В проверенных статьях найдены расхождения. Достоверность отчёта в проверяемом объёме не подтверждена.'
-    elif unknown:
+    elif unknown or result.get('total', {}).get('status') == 'Недостаточно данных':
         conclusion = 'Данных недостаточно для заключения по всем проверяемым статьям.'
+    elif result.get('total', {}).get('status') == 'Расхождение':
+        conclusion = 'Суммы статей согласуются с документами, но общий итог отчёта требует уточнения.'
     else:
         conclusion = 'Суммы проверяемых статей согласуются с принятыми документами. Это не подтверждает полноту комплекта и остальные показатели отчёта.'
     excluded = [{'id': d.get('id'), 'file': d['file'], 'category': category(d), 'reason': d.get('reason', ''),
@@ -98,20 +100,23 @@ def build_review(result):
         rows[row['code']] = {'statement': statement, 'cause': cause, 'categories': tags, 'sources': sources,
                              'report_source': report_source, 'actions': actions, 'subject': subject, 'request_text': text}
     return {'conclusion': conclusion, 'counts': {'matched': matched, 'mismatch': mismatch, 'unverified': unknown},
-            'scope': 'Проверены статьи 0200, 0300, 0800, 0900. Полнота разовых актов и остальные показатели КФЗ не подтверждены.',
+            'scope': 'Статьи в сверке: ' + ', '.join(r['code'] for r in result['rows']) + '. Полнота комплекта и показатели вне этой таблицы не подтверждены.',
             'rows': rows, 'document_issues': excluded}
 
 
 def compare_results(before, after):
     previous = {r['code']: r for r in before['rows']}
+    current = {r['code']: r for r in after['rows']}
     rows = []
-    for row in after['rows']:
-        old = previous[row['code']]
-        closed = old['status'] != 'Совпадает' and row['status'] == 'Совпадает'
-        rows.append({'code': row['code'], 'title': row['title'],
+    missing = {'reported': None, 'confirmed': None, 'difference': None, 'status': 'Нет статьи в версии'}
+    for code in sorted(previous.keys() | current.keys()):
+        old, row = previous.get(code, missing), current.get(code, missing)
+        closed = code in previous and code in current and old['status'] != 'Совпадает' and row['status'] == 'Совпадает'
+        change = str((Decimal(row['confirmed']) - Decimal(old['confirmed'])).quantize(Decimal('.01'))) if code in previous and code in current else None
+        rows.append({'code': code, 'title': row.get('title', old.get('title', code)),
                      'before': {k: old.get(k) for k in ('reported', 'confirmed', 'difference', 'status')},
                      'after': {k: row.get(k) for k in ('reported', 'confirmed', 'difference', 'status')},
-                     'confirmed_change': str((Decimal(row['confirmed']) - Decimal(old['confirmed'])).quantize(Decimal('.01'))),
+                     'confirmed_change': change,
                      'changed': any(old.get(k) != row.get(k) for k in ('reported', 'confirmed', 'difference', 'status')),
                      'resolved': closed})
     def identity(document):
