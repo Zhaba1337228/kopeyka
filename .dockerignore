@@ -1,0 +1,15 @@
+**
+!Dockerfile
+!requirements.txt
+!README.md
+!app.py
+!kfz_core/
+!kfz_core/**
+!config/
+!config/**
+!ui/
+!ui/**
+!.streamlit/
+!.streamlit/**
+**/__pycache__/
+**/*.pyc
