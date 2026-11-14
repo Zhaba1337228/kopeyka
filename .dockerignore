@@ -3,6 +3,11 @@
 !requirements.txt
 !README.md
 !app.py
+!backend.py
+!frontend/
+!frontend/**
+frontend/node_modules/
+frontend/dist/
 !kfz_core/
 !kfz_core/**
 !config/

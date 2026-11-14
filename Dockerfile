@@ -1,3 +1,10 @@
+FROM node:22-slim AS frontend
+WORKDIR /frontend
+COPY frontend/package*.json ./
+RUN npm ci
+COPY frontend/ ./
+RUN npm run build
+
 FROM python:3.11-slim-bookworm
 
 ENV PYTHONUNBUFFERED=1 \
@@ -19,9 +26,10 @@ COPY kfz_core/ ./kfz_core/
 COPY config/ ./config/
 COPY ui/ ./ui/
 COPY .streamlit/ ./.streamlit/
-COPY app.py README.md ./
+COPY app.py backend.py README.md ./
+COPY --from=frontend /frontend/dist ./frontend/dist
 RUN useradd --create-home --uid 10001 appuser && chown -R appuser:appuser /app
 USER appuser
 EXPOSE 8501
-HEALTHCHECK --interval=30s --timeout=5s --start-period=20s CMD python -c "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8501/_stcore/health')"
-CMD ["streamlit", "run", "app.py", "--server.address=0.0.0.0", "--server.port=8501", "--server.headless=true"]
+HEALTHCHECK --interval=30s --timeout=5s --start-period=20s CMD python -c "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8501/')"
+CMD ["uvicorn", "backend:app", "--host", "0.0.0.0", "--port", "8501"]
