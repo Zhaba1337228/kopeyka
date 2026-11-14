@@ -153,6 +153,17 @@ def check_mutations(args, baseline, report, documents, expected):
     assert sum(d["status"] == "accepted" for d in result["documents"]) == 19
     record("rename_and_order")
 
+    relocated_report=work/'relocated-report.pdf'
+    with fitz.open(report) as original,fitz.open() as relocated:
+        for page in original:
+            target=relocated.new_page(width=page.rect.width+120,height=page.rect.height+160)
+            target.show_pdf_page(fitz.Rect(60,90,page.rect.width+60,page.rect.height+90),original,page.number)
+        relocated.save(relocated_report)
+    moved=run_scenario('relocated_report',documents,relocated_report)
+    assert signature(moved)==signature(baseline), 'Перемещение формы на странице изменило суммы'
+    assert {x['code']:x['reported'] for x in moved['indicators']}=={x['code']:x['reported'] for x in baseline['indicators']}
+    record('relocated_report')
+
     source_docx = next(p for p in documents if p.name.startswith("06_"))
     changed = work / "amount_plus_1000.docx"
     doc = Document(source_docx)

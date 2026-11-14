@@ -17,6 +17,7 @@ from starlette.concurrency import run_in_threadpool
 
 from kfz_core import reconcile, ReportSelectionRequired
 from kfz_core.review import build_review, compare_results, rub, location
+from kfz_core.amounts import pin_source
 from ui.uploads import stage_uploads
 
 app = FastAPI()
@@ -84,7 +85,7 @@ def fork_job(parent_id, parent, operation):
            'base': base, 'report': report, 'documents': paths, 'journal': deepcopy(parent['journal']),
            'contract': parent['contract'], 'start': parent['start'], 'end': parent['end'],
            'root': root, 'parent': parent_id, 'version': version, 'operation': operation, 'status': 'Обработка',
-           'decisions': deepcopy(parent.get('decisions', {})), 'row_id': parent.get('row_id')}
+           'decisions': {doc_id:pin_source(decision,doc_id,parent.get('result',{})) for doc_id,decision in parent.get('decisions',{}).items()}, 'row_id': parent.get('row_id')}
     sessions[sid] = job
     save(job)
     return sid, job
@@ -203,7 +204,7 @@ def recalculate(session: str, body: dict, request: Request):
                 session, job = fork_job(session, job, 'Ручное решение проверяющего')
             decisions = dict(job.get('decisions', {}))
             if body.get('document_id'):
-                decisions[body['document_id']] = body['decision']
+                decisions[body['document_id']] = pin_source(body['decision'],body['document_id'],parent.get('result',{}) if parent else job.get('result',{}))
             calculate(job, body.get('row_id', job.get('row_id')), decisions)
             return jsonable_encoder(payload(session, job))
         except Exception as exc:

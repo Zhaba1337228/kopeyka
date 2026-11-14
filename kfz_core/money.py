@@ -37,6 +37,7 @@ def amount_text(value):
 
 
 MONEY_PATTERN = re.compile(r'(?<![\d/.])\(?[-−–—]?\d(?:[\d \u00a0\u202f]*\d)?[,.]\d{2,6}(?!\d)\)?')
+AMOUNT_PATTERN = re.compile(r'(?<![\w/.])\(?[-−–—]?\d+(?:[ \u00a0\u202f]\d{3})*(?:[,.]\d{1,6})?(?![\w/.])\)?')
 
 
 def unit_values(text):

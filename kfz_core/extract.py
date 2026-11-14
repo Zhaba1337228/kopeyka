@@ -34,12 +34,12 @@ def file_hash(path):
     return hashlib.sha256(Path(path).read_bytes()).hexdigest()
 
 
-def ocr_image(image, *, psm=6, digits=False):
+def ocr_image(image, *, psm=6, digits=False, language=None):
     setup_ocr()
     config = f'--psm {psm}'
     if digits:
         config += ' -c tessedit_char_whitelist=0123456789.,-'
-    return pytesseract.image_to_data(image, lang='eng' if digits else 'rus+eng', config=config, output_type=pytesseract.Output.DICT, timeout=120)
+    return pytesseract.image_to_data(image, lang=language or ('eng' if digits else 'rus+eng'), config=config, output_type=pytesseract.Output.DICT, timeout=120)
 
 
 def data_lines(data, scale=1.0):
@@ -140,7 +140,7 @@ def extract(path, cache_dir=None):
 
 
 def make_evidence(path, doc_id, line, value, label, index=0):
-    source = {k: line[k] for k in ('page', 'bbox', 'sheet', 'cell', 'table', 'row', 'paragraph', 'confidence') if k in line}
+    source = {k: line[k] for k in ('page', 'bbox', 'sheet', 'cell', 'label_cell', 'header_cell', 'table', 'row', 'paragraph', 'confidence','token_start') if k in line}
     return {'id': f'{doc_id}:{index}', 'file': Path(path).name, 'path': str(Path(path).resolve()), 'kind': Path(path).suffix.lstrip('.').lower(), 'text': line['text'], 'value': amount_text(value), 'label': label, 'image_path': None, **source}
 
 

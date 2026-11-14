@@ -5,7 +5,7 @@ import fitz
 
 from .articles import title_for
 from .extract import make_evidence, ocr_image
-from .money import MONEY_PATTERN, amount_text, scaled_money, resolve_units
+from .money import AMOUNT_PATTERN, amount_text, scaled_money, resolve_units
 from .metadata import contracts_in
 
 
@@ -67,7 +67,7 @@ def table_rows(path, page, image, scale, year, doc_id, *, use_ocr=False):
     for line, match in coded:
         code = match[1]
         value_text = ' '.join(word[4] for word in line['words'] if word[0] >= amount_left)
-        amounts = list(MONEY_PATTERN.finditer(value_text))
+        amounts = list(AMOUNT_PATTERN.finditer(value_text))
         title = ' '.join(word[4] for word in line['words'][1:] if word[0] < amount_left).strip(' |:;-')
         candidate['articles'][code] = title_for(code, title)
         if code in candidate['values']:
@@ -86,8 +86,8 @@ def table_rows(path, page, image, scale, year, doc_id, *, use_ocr=False):
         candidate['evidence'][code] = ev
     totals = [line for line in lines if re.match(r'^\s*(?:итого|всего)\b', line['text'], re.I)]
     candidate['values']['total'] = None
-    if len(totals) == 1 and len(MONEY_PATTERN.findall(totals[0]['text'])) == 1 and not unit_error:
-        value = amount_text(scaled_money(MONEY_PATTERN.findall(totals[0]['text'])[0],multiplier))
+    if len(totals) == 1 and len(AMOUNT_PATTERN.findall(totals[0]['text'])) == 1 and not unit_error:
+        value = amount_text(scaled_money(AMOUNT_PATTERN.findall(totals[0]['text'])[0],multiplier))
         candidate['values']['total'] = value
         ev = make_evidence(path, doc_id, dict(totals[0], page=page), value, 'Итог КФЗ', f'{candidate["id"]}-total')
         ev['report'] = True

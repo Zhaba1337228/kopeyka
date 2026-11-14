@@ -11,7 +11,11 @@ def verify_indicators(selected,documents,evidence,rows,months):
         refs=[]; present=set()
         for doc in documents:
             if doc['status']!='accepted' or not field or doc.get('code')!=field.split('.')[0]:continue
-            found=[ref for ref in doc['evidence_ids'] if field and evidence[ref].get('field')==field]
+            found=[ref for ref in doc['evidence_ids'] if evidence[ref].get('field')==field]
+            if not found and field.split('.')[1] in ('extra_reserve','without_reserve'):
+                components=('extra','reserve') if field.endswith('extra_reserve') else ('main','extra')
+                groups=[[ref for ref in doc['evidence_ids'] if evidence[ref].get('field')==field.split('.')[0]+'.'+part] for part in components]
+                if all(groups):found=[ref for group in groups for ref in group]
             refs.extend(found)
             if found and doc.get('period_start'):present.add(doc['period_start'][:7])
         reasons=[]
