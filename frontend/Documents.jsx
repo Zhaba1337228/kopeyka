@@ -6,7 +6,7 @@ const money = (v) =>
     ? "—"
     : Number(v).toLocaleString("ru-RU", {
         minimumFractionDigits: 2,
-        maximumFractionDigits: 2,
+        maximumFractionDigits: 6,
       });
 const names = {
   accepted: "Принят",
@@ -45,8 +45,15 @@ export function EvidenceViewer({ evidence, session, id }) {
       {ev.raw_value != null && (
         <p className="source-conversion">
           В источнике: {ev.raw_value} · Множитель:{" "}
-          {ev.multiplier || "требует уточнения"} · В рублях: {money(ev.value)}
+          {ev.multiplier || "требует уточнения"} · {ev.unit === "чел.-мес." ? "В чел.-мес." : "В рублях"}: {money(ev.value)}
         </p>
+      )}
+      {ev.formula && (
+        <details>
+          <summary>Как рассчитано значение ячейки</summary>
+          <pre>{ev.formula}</pre>
+          <ul>{(ev.formula_sources || []).map(r => <li key={r.sheet + r.cell}>{r.sheet} · {r.cell}: {String(r.raw)}</li>)}</ul>
+        </details>
       )}
       {ev.manual && (
         <p className="source-conversion">
@@ -57,8 +64,49 @@ export function EvidenceViewer({ evidence, session, id }) {
   );
 }
 
+export function ReportReview({result, session, busy, onRecalculate}) {
+  const options=[...result.rows,result.total,...(result.indicators || [])].map(row=>({
+    ...row,source:row.report_evidence_id || (row.report_evidence_ids?.length===1 ? row.report_evidence_ids[0] : null),
+  })).filter(row=>row.source && result.evidence[row.source]);
+  const [code,setCode]=useState(options[0]?.code || '');
+  const selected=options.find(row=>row.code===code);
+  const [raw,setRaw]=useState(selected?.reported || ''), [unit,setUnit]=useState('1'), [reason,setReason]=useState('');
+  if (!selected) return null;
+  const labor=selected.unit==='чел.-мес.';
+  function choose(value) {
+    setCode(value);setRaw(options.find(row=>row.code===value)?.reported || '');setUnit('1');setReason('');
+  }
+  function submit(event) {
+    event.preventDefault();
+    onRecalculate({report_decision:{code,source:selected.source,raw,multiplier:unit,reason}});
+  }
+  return <details className="document-review report-review">
+    <summary>Проверить значение в КФЗ</summary>
+    <p className="muted">Сверьте значение с выделенным фрагментом. Исправление и основание сохранятся в новой версии; оригинал останется прежним.</p>
+    <label htmlFor="report-metric">Показатель КФЗ</label>
+    <select id="report-metric" value={code} onChange={event=>choose(event.target.value)} disabled={busy}>
+      {options.map(row=><option key={row.code} value={row.code}>{row.title}</option>)}
+    </select>
+    <div className="document-review-grid">
+      <EvidenceViewer evidence={result.evidence} session={session} id={selected.source}/>
+      <form onSubmit={submit}>
+        <label htmlFor="report-value">Значение в КФЗ</label>
+        <input id="report-value" value={raw} onChange={event=>setRaw(event.target.value)} required inputMode="decimal" maxLength={40} disabled={busy}/>
+        <label htmlFor="report-unit">Единица КФЗ</label>
+        <select id="report-unit" value={unit} onChange={event=>setUnit(event.target.value)} disabled={busy}>
+          {labor ? <option value="1">Человеко-месяцы</option> : <><option value="1">Рубли</option><option value="1000">Тысячи рублей</option><option value="1000000">Миллионы рублей</option></>}
+        </select>
+        <label htmlFor="report-reason">Основание исправления КФЗ</label>
+        <textarea id="report-reason" value={reason} onChange={event=>setReason(event.target.value)} required maxLength={1000} disabled={busy} rows={3}/>
+        <button className="primary" disabled={busy || !raw.trim() || !reason.trim()}>Подтвердить значение КФЗ</button>
+      </form>
+    </div>
+  </details>;
+}
+
 function DocumentReview({ doc, result, session, busy, onRecalculate }) {
   const candidates = doc.amount_candidates || [];
+  const detailOnly = !!doc.indicator_only;
   const initial =
     candidates.find((c) => doc.evidence_ids?.includes(c.id)) || candidates[0];
   const [source, setSource] = useState(
@@ -93,7 +141,7 @@ function DocumentReview({ doc, result, session, busy, onRecalculate }) {
   function submit(e) {
     e.preventDefault();
     setError("");
-    if (action === "include" && doc.amount == null && !confirm) {
+    if (action === "include" && doc.amount == null && !confirm && !detailOnly) {
       setError("Подтвердите сумму по источнику перед включением.");
       return;
     }
@@ -108,7 +156,7 @@ function DocumentReview({ doc, result, session, busy, onRecalculate }) {
         ([k, v]) => v.trim() !== String(doc[k] || ""),
       ),
     );
-    const decision = { action, code, reason, metadata: corrections };
+    const decision = { action, code: detailOnly ? null : code, reason, metadata: corrections };
     if (confirm && action === "include")
       Object.assign(decision, {
         amount_source: source,
@@ -184,7 +232,7 @@ function DocumentReview({ doc, result, session, busy, onRecalculate }) {
           </select>
           {action === "include" && (
             <>
-              <label htmlFor="review-code">Статья</label>
+              {detailOnly ? <p className="muted">Документ подтверждает детальные показатели. Его значения не добавляются к сумме статей.</p> : <><label htmlFor="review-code">Статья</label>
               <select
                 id="review-code"
                 value={code}
@@ -196,7 +244,7 @@ function DocumentReview({ doc, result, session, busy, onRecalculate }) {
                     {r.code} · {r.title}
                   </option>
                 ))}
-              </select>
+              </select></>}
               <label className="confirm-amount">
                 <input
                   type="checkbox"
@@ -204,7 +252,7 @@ function DocumentReview({ doc, result, session, busy, onRecalculate }) {
                   onChange={(e) => setConfirm(e.target.checked)}
                   disabled={busy || !refs.length}
                 />
-                Подтвердить сумму по выбранному фрагменту
+                {detailOnly ? "Подтвердить значение по выбранному фрагменту" : "Подтвердить сумму по выбранному фрагменту"}
               </label>
               {confirm && (
                 <>
@@ -226,9 +274,9 @@ function DocumentReview({ doc, result, session, busy, onRecalculate }) {
                     onChange={(e) => setMultiplier(e.target.value)}
                     disabled={busy}
                   >
-                    <option value="1">Рубли</option>
+                    {result.evidence[source]?.field === "labor.total" ? <option value="1">Человеко-месяцы</option> : <><option value="1">Рубли</option>
                     <option value="1000">Тысячи рублей</option>
-                    <option value="1000000">Миллионы рублей</option>
+                    <option value="1000000">Миллионы рублей</option></>}
                   </select>
                   <p className="muted">
                     В расчёт попадёт подтверждённая сумма этого фрагмента.
@@ -353,7 +401,7 @@ export default function Documents({ result, session, busy, onRecalculate }) {
                     d.file
                   )}
                 </td>
-                <td>{d.code || "—"}</td>
+                <td>{d.indicator_only ? "Детальные показатели" : d.code || "—"}</td>
                 <td>{money(d.amount)}</td>
                 <td>{names[d.status] || d.status}</td>
                 <td>{d.reason}</td>

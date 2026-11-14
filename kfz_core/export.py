@@ -37,8 +37,8 @@ def workbook_bytes(result,version,created):
           [[r['code'],r['title'],r['reported'],r['confirmed'],r['difference'],r['status'],'; '.join(r['reasons']),'; '.join(([r['report_evidence_id']] if r.get('report_evidence_id') else [])+r['evidence_ids'])] for r in result['rows']])
     sheet('Другие показатели',['Показатель','Единица','КФЗ','Подтверждено','Разница','Статус','Причина','Источники'],
           [[r['title'],r['unit'],r['reported'],r['confirmed'],r['difference'],r['status'],'; '.join(r['reasons']),'; '.join(r.get('report_evidence_ids',[])+r['evidence_ids'])] for r in result.get('indicators',[])])
-    sheet('Источники',['Идентификатор','Документ и место','Фрагмент','Исходное значение','Множитель','Подтверждённое значение','Ручное подтверждение'],
-          [[key,location(ev),ev.get('fragment_text') or ev.get('text'),ev.get('raw_value'),ev.get('multiplier'),ev.get('value'),ev.get('review_reason','')] for key,ev in result['evidence'].items()])
+    sheet('Источники',['Идентификатор','Документ и место','Фрагмент','Исходное значение','Множитель','Подтверждённое значение','Ручное подтверждение','Единица','Формула источника','Ячейки расчёта'],
+          [[key,location(ev),ev.get('fragment_text') or ev.get('text'),ev.get('raw_value'),ev.get('multiplier'),ev.get('value'),ev.get('review_reason',''),ev.get('unit',''),ev.get('formula',''),'; '.join(f"{r['sheet']}!{r['cell']}: {r['raw']}" for r in ev.get('formula_sources',[]))] for key,ev in result['evidence'].items()])
     sheet('Документы и решения',['Файл','Статья','Сумма, руб.','Статус','Причина','Основание ручного решения'],
-          [[d['file'],d.get('code'),d.get('amount'),d['status'],d.get('reason'),d.get('decision',{}).get('reason','')] for d in result['documents']])
+          [[d['file'],'Детальные показатели' if d.get('indicator_only') else d.get('code'),d.get('amount'),d['status'],d.get('reason'),d.get('decision',{}).get('reason','')] for d in result['documents']])
     output=BytesIO();book.save(output);return output.getvalue()

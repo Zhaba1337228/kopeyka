@@ -6,7 +6,8 @@
   border: 1px solid var(--border);
   border-radius: 10px;
 }
-.coverage > summary {
+.coverage > summary,
+.report-review > summary {
   cursor: pointer;
   font-weight: 600;
   line-height: 1.6;

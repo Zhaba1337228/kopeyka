@@ -5,8 +5,9 @@ import json
 from decimal import Decimal
 
 from .extract import make_evidence
-from .money import MONEY_PATTERN, AMOUNT_PATTERN, amount_text, decimal_value, scaled_money, resolve_units
-from .tabular import spreadsheet_cells, component_plan
+from .money import MONEY_PATTERN, AMOUNT_PATTERN, amount_text, decimal_value, scaled_money, resolve_units, quantity_text
+from .tabular import spreadsheet_cells, component_plan, financial_field
+from .formulas import FormulaReader, FormulaError
 
 SOURCE_LOCATION = ('sheet','cell','table','row','paragraph','page','bbox','token_start')
 
@@ -51,19 +52,22 @@ def rank_amount(text):
 def read_amounts(path, doc_id, extracted, meta, decision=None):
     decision = decision or {}
     candidates, evidence = [], []
+    formula_errors = []
     global_units = declarations(extracted['lines'])
 
     def add(line, raw, local='', field=None, rank=None):
         scopes = [global_units, local]
         if line.get('table'):
             scopes += ['\n'.join(r['text'] for r in extracted['tables'] if r.get('table')==line['table'] and not MONEY_PATTERN.search(r['text']))]
-        multiplier, issue = resolve_units(*scopes)
-        value = scaled_money(raw, multiplier) if multiplier is not None else None
+        multiplier, issue = (Decimal(1), None) if field == 'labor.total' else resolve_units(*scopes)
+        if field == 'labor.total' and not re.search(r'чел\.?\s*[-.]?\s*мес|человеко.?месяц', local, re.I):
+            multiplier, issue = None, 'Для трудоёмкости требуется единица чел.-мес.; часы автоматически не переводятся'
+        value = (decimal_value(raw) if field=='labor.total' else scaled_money(raw, multiplier)) if multiplier is not None else None
         location={key:line[key] for key in SOURCE_LOCATION if key in line}
         location['raw_value']=str(decimal_value(raw))
         ident='amount-'+hashlib.sha256(json.dumps(location,sort_keys=True,ensure_ascii=False).encode()).hexdigest()[:16]
         ev = make_evidence(path, doc_id, line, value if value is not None else raw, line['text'][:150], ident)
-        ev.update(value=amount_text(value) if value is not None else None, raw_value=str(decimal_value(raw)),
+        ev.update(value=(quantity_text(value) if field=='labor.total' else amount_text(value)) if value is not None else None, raw_value=str(decimal_value(raw)), unit='чел.-мес.' if field=='labor.total' else '₽',
                   multiplier=str(multiplier) if multiplier is not None else None, field=field, fragment_text=line['text'])
         evidence.append(ev)
         candidates.append({'id':ev['id'], 'raw_value':ev['raw_value'], 'value':ev['value'],
@@ -71,14 +75,25 @@ def read_amounts(path, doc_id, extracted, meta, decision=None):
                            'rank':rank_amount(line['text']) if rank is None else rank, 'field':field})
 
     if extracted['kind'] == 'xlsx':
+        formulas = FormulaReader(extracted['sheets'])
         for item in spreadsheet_cells(extracted):
             if item['formula']:
-                continue  # No guessed/cached evaluation of arbitrary spreadsheet formulas.
+                try:
+                    formulas.budget = 0
+                    raw, dependencies = formulas.cell(item['line']['sheet'], item['line']['cell'])
+                    item['line']['formula'] = item['raw']
+                    item['line']['formula_sources'] = [{'sheet': sheet, 'cell': cell, 'raw': extracted['sheets'][sheet][cell]}
+                                                       for sheet, cell in sorted(dependencies)]
+                    item['raw'] = raw
+                except FormulaError as error:
+                    if not item['excluded']:
+                        formula_errors.append(f"{item['line']['sheet']}!{item['line']['cell']}: {error}")
+                    continue
             add(item['line'],item['raw'],item['local'],item['field'],
                 0 if item['excluded'] else rank_amount(item['label']))
     else:
         for line in extracted['lines']:
-            has_amount_label = re.search(r'руб|₽|сумм|стоим|итого|всего|оплат|начислен',line['text'],re.I)
+            has_amount_label = re.search(r'руб|₽|сумм|стоим|итого|всего|оплат|начислен|трудо[её]м|чел[.]?[-.]?мес',line['text'],re.I)
             matches = list((AMOUNT_PATTERN if has_amount_label else MONEY_PATTERN).finditer(line['text']))
             dates = list(re.finditer(r'\b\d{2}\.\d{2}\.\d{4}\b',line['text']))
             if re.search(r'\d{2}\.\d{2}\.\d{4}',line['text']) and not re.search(r'руб|сумм|стоим|итого|оплат',line['text'],re.I):
@@ -88,7 +103,24 @@ def read_amounts(path, doc_id, extracted, meta, decision=None):
                     continue
                 prefix=line['text'][matches[index-1].end() if index else 0:match.start()]
                 label=prefix if len(matches)>1 and re.search(r'итого|всего|оплат|НДС|налог|аванс|сумм|стоим|начислен',prefix,re.I) else line['text']
-                add(dict(line,token_start=match.start()),match[0],line['text'],rank=rank_amount(label))
+                add(dict(line,token_start=match.start()),match[0],line['text'],field=financial_field(label),rank=rank_amount(label))
+
+    detail_candidates = [c for c in candidates if c.get('field') in ('labor.total','material.total')]
+    monetary = [c for c in candidates if c not in detail_candidates or
+                (c.get('field')=='material.total' and meta.get('code'))]
+    detail_refs, detail_issues = [], []
+    for field in ('labor.total','material.total'):
+        entries = [c for c in detail_candidates if c['field']==field]
+        if not entries: continue
+        totals = [c for c in entries if c['rank'] >= 3]
+        parts = [c for c in entries if c['rank'] < 3]
+        invalid = any(c['issue'] or c['value'] is None for c in entries)
+        if invalid or len(totals)>1 or (totals and parts and Decimal(totals[0]['value']) != sum(Decimal(c['value']) for c in parts)):
+            detail_issues.append('Неоднозначные значения или единицы детального показателя '+field)
+        else:
+            detail_refs.extend(c['id'] for c in (parts or totals))
+    if detail_candidates and not monetary and not meta.get('code'):
+        meta['indicator_only'] = ','.join(sorted({c['field'] for c in detail_candidates}))
 
     # Even an unreadable amount can be corrected against an explicit source fragment.
     if not candidates:
@@ -116,7 +148,9 @@ def read_amounts(path, doc_id, extracted, meta, decision=None):
         multiplier = str(decision.get('amount_multiplier',chosen['multiplier']))
         if multiplier not in ('1','1000','1000000') or raw is None:
             raise ValueError('Подтвердите сумму и единицу измерения')
-        value = amount_text(scaled_money(raw,multiplier))
+        if chosen.get('field')=='labor.total' and (multiplier!='1' or decision.get('code')):
+            raise ValueError('Трудоёмкость подтверждается в чел.-мес. и не включается в денежную статью')
+        value = quantity_text(raw) if chosen.get('field')=='labor.total' else amount_text(scaled_money(raw,multiplier))
         source = next(e for e in evidence if e['id']==source_id)
         # Keep the parsed candidate intact; the accepted manual value is a separate evidence record.
         reviewed = dict(source,id=source_id+'-reviewed',value=value,raw_value=str(decimal_value(raw)),
@@ -124,9 +158,13 @@ def read_amounts(path, doc_id, extracted, meta, decision=None):
                         review_reason=decision.get('reason',''))
         evidence.append(reviewed)
         selected = [reviewed['id']]
+        if chosen in detail_candidates:
+            detail_refs = [ref for ref in detail_refs if next(ev for ev in evidence if ev['id']==ref).get('field') != chosen['field']]
+            detail_refs.append(reviewed['id'])
+            detail_issues = []
     else:
-        rank=max((c['rank'] for c in candidates if c['raw_value'] is not None),default=0)
-        best=[c for c in candidates if c['rank']==rank and c['raw_value'] is not None]
+        rank=max((c['rank'] for c in monetary if c['raw_value'] is not None),default=0)
+        best=[c for c in monetary if c['rank']==rank and c['raw_value'] is not None]
         if rank==0 or not best:
             reason='Не найдена однозначная итоговая сумма; выберите источник и подтвердите значение'
         elif any(c['issue'] for c in best):
@@ -135,23 +173,33 @@ def read_amounts(path, doc_id, extracted, meta, decision=None):
             reason='Найдено несколько итоговых сумм; выберите нужную по источнику'
         else:
             selected=[best[-1]['id']]
-        if extracted['kind']=='xlsx':
-            code,parts,part_error=component_plan(candidates)
+        if any(c.get('field','') and c['field'].startswith(('0200.','0300.')) for c in monetary):
+            code,parts,part_error=component_plan(monetary)
             if code:
                 if meta.get('code') and meta['code']!=code:
                     selected=[];reason='Назначение начислений противоречит статье документа'
                 else:
                     meta['code']=code
-                    totals=[c for c in candidates if (c['rank']>=3 and not c['field']) or c['field']==code+'.total']
+                    totals=[c for c in monetary if ((c['rank']>=3 and not c['field']) or c['field']==code+'.total') and c not in (parts or [])]
                     if parts:
-                        unknown=[c for c in candidates if c not in parts and c not in totals and c['rank']>0 and c.get('value') not in (None,'0.00')]
+                        subtotals=[c for c in monetary if c.get('field') and c['rank']>=3 and c['field'] in {p['field'] for p in parts}]
+                        unknown=[c for c in monetary if c not in parts and c not in totals and c not in subtotals and c['rank']>0 and c.get('value') not in (None,'0.00')]
                         invalid=any(c['issue'] or c['value'] is None for c in parts)
                         expected=sum((Decimal(c['value']) for c in parts),Decimal(0)) if not invalid else None
                         if invalid or unknown or any(t['value'] is None or Decimal(t['value'])!=expected for t in totals):
                             selected=[];reason='Состав начислений, единицы или итог противоречат друг другу; проверьте источники'
                         else:
                             selected=[c['id'] for c in parts];reason=None
-                    elif not totals or reason:
+                    elif not totals or reason or (part_error and 'противоречит' in part_error):
                         selected=[];reason=part_error
+        if meta.get('indicator_only'):
+            selected = detail_refs
+            reason = '; '.join(detail_issues) or (None if selected else 'Нет подтверждённого детального показателя')
+        if formula_errors:
+            selected=[];reason='Не удалось проверить формулы: '+'; '.join(formula_errors)
+    if detail_issues:
+        detail_refs=[]
     amount=amount_text(sum((Decimal(ev['value']) for ev in evidence if ev['id'] in selected),Decimal(0))) if selected else None
-    return {'amount':amount,'evidence_ids':selected,'candidates':candidates,'evidence':evidence,'reason':reason}
+    if meta.get('indicator_only'):
+        amount = None  # Physical quantities and detail-only amounts are not ledger totals.
+    return {'amount':amount,'evidence_ids':selected,'indicator_evidence_ids':detail_refs,'indicator_issues':detail_issues,'candidates':candidates,'evidence':evidence,'reason':reason}

@@ -71,7 +71,7 @@ def page_image(path, page=1, scale=2.0):
 def extract(path, cache_dir=None):
     """Return complete text and source lines. Cache keyed only by file bytes/version."""
     path = Path(path)
-    cache = Path(cache_dir) / (file_hash(path) + '-v2.json') if cache_dir else None
+    cache = Path(cache_dir) / (file_hash(path) + '-v3.json') if cache_dir else None
     if cache and cache.exists():
         return json.loads(cache.read_text(encoding='utf-8'))
     suffix = path.suffix.lower()
@@ -84,10 +84,8 @@ def extract(path, cache_dir=None):
                 text = page.get_text().strip()
                 if len(text) > 30:
                     words = page.get_text('words')
-                    groups = {}
-                    for w in words:
-                        groups.setdefault((w[5], w[6]), []).append(w)
-                    lines = [{'text': ' '.join(w[4] for w in ws), 'bbox': [min(w[0] for w in ws), min(w[1] for w in ws), max(w[2] for w in ws), max(w[3] for w in ws)], 'confidence': 100} for ws in groups.values()]
+                    from .report_tables import word_lines
+                    lines = [{k:v for k,v in line.items() if k!='words'} | {'confidence':100} for line in word_lines(words)]
                 else:
                     scale = 2.0 if page.rect.width > 700 else 4.0
                     image = page_image(path, page_no, scale)
@@ -140,7 +138,7 @@ def extract(path, cache_dir=None):
 
 
 def make_evidence(path, doc_id, line, value, label, index=0):
-    source = {k: line[k] for k in ('page', 'bbox', 'sheet', 'cell', 'label_cell', 'header_cell', 'table', 'row', 'paragraph', 'confidence','token_start') if k in line}
+    source = {k: line[k] for k in ('page', 'bbox', 'sheet', 'cell', 'label_cell', 'header_cell', 'table', 'row', 'paragraph', 'confidence','token_start','formula','formula_sources') if k in line}
     return {'id': f'{doc_id}:{index}', 'file': Path(path).name, 'path': str(Path(path).resolve()), 'kind': Path(path).suffix.lstrip('.').lower(), 'text': line['text'], 'value': amount_text(value), 'label': label, 'image_path': None, **source}
 
 

@@ -36,6 +36,15 @@ def amount_text(value):
     return format(money(value), '.2f')
 
 
+def quantity_text(value):
+    """Physical quantities retain source precision instead of rounding to cents."""
+    text = format(decimal_value(value), 'f')
+    if '.' not in text:
+        return text + '.00'
+    whole, fraction = text.split('.')
+    return whole + '.' + fraction.rstrip('0').ljust(2, '0')
+
+
 MONEY_PATTERN = re.compile(r'(?<![\d/.])\(?[-−–—]?\d(?:[\d \u00a0\u202f]*\d)?[,.]\d{2,6}(?!\d)\)?')
 AMOUNT_PATTERN = re.compile(r'(?<![\w/.])\(?[-−–—]?\d+(?:[ \u00a0\u202f]\d{3})*(?:[,.]\d{1,6})?(?![\w/.])\)?')
 

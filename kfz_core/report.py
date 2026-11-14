@@ -9,7 +9,7 @@ import fitz
 from PIL import Image, ImageOps
 
 from .extract import data_lines, file_hash, make_evidence, ocr_image, page_image
-from .money import AMOUNT_PATTERN, amount_text, money, scaled_money, resolve_units
+from .money import AMOUNT_PATTERN, amount_text, money, scaled_money, resolve_units, quantity_text
 from .articles import KNOWN_TITLES, title_for
 from .report_tables import table_rows
 from .metadata import contracts_in
@@ -19,7 +19,7 @@ from .extract import extract
 
 # Accounting labels are explicit domain rules; page geometry comes from the file.
 PARSER_REVISION = hashlib.sha256(b''.join(Path(__file__).with_name(name).read_bytes() for name in (
-    'report.py','report_tables.py','grid.py','money.py','metadata.py','extract.py','amounts.py'
+    'report.py','report_tables.py','grid.py','money.py','metadata.py','extract.py','amounts.py','tabular.py','formulas.py'
 ))).hexdigest()[:12]
 
 
@@ -87,8 +87,8 @@ def _detail_indicators(image,bands,columns,candidate,path,doc_id,scale,top,botto
     header_top=bands[0][1]+3
     major=_vertical_edges(image,header_top,bands[1][0]-3)
     specs={
-        'labor':('detail-3','Трудоёмкость','чел.-мес.',None),
-        'material':('detail-4','Материальные затраты','₽',None),
+        'labor':('detail-3','Трудоёмкость','чел.-мес.','labor.total'),
+        'material':('detail-4','Материальные затраты','₽','material.total'),
         '0200.without_reserve':('detail-6','Заработная плата без резерва','₽','0200.without_reserve'),
         '0200.main':('detail-7','Основная заработная плата','₽','0200.main'),
         '0200.extra':('detail-8','Дополнительная заработная плата','₽','0200.extra'),
@@ -110,7 +110,7 @@ def _detail_indicators(image,bands,columns,candidate,path,doc_id,scale,top,botto
         if re.search(r'трудоем|человеко.?месяц',heading):key='labor'
         elif re.search(r'матер.*затрат',heading,re.S):key='material'
         elif parent:
-            suffix='reserve' if 'резерв' in heading else 'main' if 'основн' in heading else 'extra' if re.search(r'допол[а-я]*',heading) else 'without_reserve' if 'всего' in heading else None
+            suffix='without_reserve' if re.search(r'без\s+резерв',heading) else 'reserve' if 'резерв' in heading else 'main' if 'основн' in heading else 'extra' if re.search(r'допол[а-я]*',heading) else 'without_reserve' if 'всего' in heading else None
             if suffix:key=parent+'.'+suffix
         if key not in specs:continue
         if key in found:raise ValueError('Неоднозначные подписи детального показателя КФЗ: '+key)
@@ -124,8 +124,9 @@ def _detail_indicators(image,bands,columns,candidate,path,doc_id,scale,top,botto
             retry_matches=AMOUNT_PATTERN.findall(retry)
             if len(retry_matches)==1:raw,matches=retry,retry_matches
         value=amount_text(scaled_money(matches[0],multiplier if unit=='₽' else 1)) if len(matches)==1 and (multiplier is not None or unit!='₽') else None
+        if len(matches)==1 and unit=='чел.-мес.':value=quantity_text(matches[0])
         ev=make_evidence(path,doc_id,{'text':f'{heading}: {raw}','page':candidate['page'],'bbox':[v/scale for v in box]},value or 0,title,f'{candidate["id"]}-{code}')
-        ev.update(report=True,value=value)
+        ev.update(report=True,value=value,unit=unit)
         candidate['evidence'][code]=ev
         result.append({'code':code,'title':title,'unit':unit,'reported':value,'report_evidence_ids':[ev['id']],'field':field})
     parts=[r for r in result if r['code'] in ('detail-8','detail-9')]
@@ -212,6 +213,9 @@ def inspect_report(kfz_path, output_dir=None, *, year=2026):
                 if len(matches) != 1 or unit_error:
                     candidate['column_errors'][code] = f'Не удалось однозначно распознать показатель {code}: {raw or "пусто"}'
                     candidate['values'][code] = None
+                    ev=make_evidence(path,doc_id,{'text':f'{label}; {title}: {raw}','page':page,'bbox':[v/scale for v in box]},0,title,f'{row_id}-{code}')
+                    ev.update(report=True,value=None)
+                    candidate['evidence'][code]=ev
                     continue
                 value = amount_text(scaled_money(matches[0],multiplier))
                 candidate['values'][code] = value

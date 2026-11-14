@@ -13,7 +13,7 @@ def category(document):
     reason = document.get('reason', '').lower()
     if document.get('duplicate_of') or 'повторный документ' in reason or 'копия по sha' in reason:
         return 'Дублирование'
-    if 'другой период' in reason:
+    if 'другой период' in reason or 'пересекаются периоды' in reason:
         return 'Неверный период'
     if 'другой договор' in reason:
         return 'Другой договор'
@@ -134,12 +134,23 @@ def compare_results(before, after):
         key = identity(document)
         old = old_docs.get(key) if remaining[key] else None
         remaining[key] -= 1
-        item = {k: document.get(k) for k in ('id', 'file', 'status', 'code', 'amount', 'reason')}
+        item = {k: document.get(k) for k in ('id', 'file', 'status', 'code', 'amount', 'reason', 'indicator_only')}
         item['category'] = category(document)
         if old is None:
             added.append(item)
         elif any(old.get(k) != document.get(k) for k in ('status', 'amount', 'code')):
             item['before_status'] = old['status']
             changed.append(item)
-    return {'rows': rows, 'added_documents': added, 'changed_documents': changed,
+    old_metrics = {r['code']:r for r in before.get('indicators',[])}
+    new_metrics = {r['code']:r for r in after.get('indicators',[])}
+    indicators = []
+    for code in sorted(old_metrics.keys() | new_metrics.keys()):
+        old, current = old_metrics.get(code,missing), new_metrics.get(code,missing)
+        indicators.append({'code':code, 'title':current.get('title',old.get('title',code)), 'unit':current.get('unit',old.get('unit','')),
+                           'before':{k:old.get(k) for k in ('reported','confirmed','difference','status')},
+                           'after':{k:current.get(k) for k in ('reported','confirmed','difference','status')},
+                           'confirmed_change':str(Decimal(current['confirmed'])-Decimal(old['confirmed'])) if current.get('confirmed') is not None and old.get('confirmed') is not None else None,
+                           'changed':any(old.get(k)!=current.get(k) for k in ('reported','confirmed','difference','status')),
+                           'resolved':old.get('status')!='Совпадает' and current.get('status')=='Совпадает'})
+    return {'rows': rows, 'indicators':indicators, 'added_documents': added, 'changed_documents': changed,
             'before_total': before['total'], 'after_total': after['total']}

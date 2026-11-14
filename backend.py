@@ -85,7 +85,8 @@ def fork_job(parent_id, parent, operation):
            'base': base, 'report': report, 'documents': paths, 'journal': deepcopy(parent['journal']),
            'contract': parent['contract'], 'start': parent['start'], 'end': parent['end'],
            'root': root, 'parent': parent_id, 'version': version, 'operation': operation, 'status': 'Обработка',
-           'decisions': {doc_id:pin_source(decision,doc_id,parent.get('result',{})) for doc_id,decision in parent.get('decisions',{}).items()}, 'row_id': parent.get('row_id')}
+           'decisions': {doc_id:pin_source(decision,doc_id,parent.get('result',{})) for doc_id,decision in parent.get('decisions',{}).items()},
+           'report_decisions':deepcopy(parent.get('report_decisions',{})), 'row_id': parent.get('row_id')}
     sessions[sid] = job
     save(job)
     return sid, job
@@ -144,7 +145,7 @@ def calculate(job, row_id=None, decisions=None):
     try:
         result = reconcile(job['report'], job['documents'], output_dir=job['base'] / 'evidence',
                            contract=job['contract'], start_date=job['start'], end_date=job['end'],
-                           report_row_id=row_id, decisions=decisions or {})
+                           report_row_id=row_id, decisions=decisions or {}, report_decisions=job.get('report_decisions',{}))
     except ReportSelectionRequired as exc:
         job['candidates'] = exc.candidates
         job['status'] = 'Выберите строку КФЗ'
@@ -205,6 +206,11 @@ def recalculate(session: str, body: dict, request: Request):
             decisions = dict(job.get('decisions', {}))
             if body.get('document_id'):
                 decisions[body['document_id']] = pin_source(body['decision'],body['document_id'],parent.get('result',{}) if parent else job.get('result',{}))
+            if body.get('report_decision'):
+                decision=body['report_decision']
+                if not isinstance(decision,dict) or not isinstance(decision.get('code'),str):
+                    raise ValueError('Недопустимое исправление КФЗ')
+                job.setdefault('report_decisions',{})[decision['code']]={k:v for k,v in decision.items() if k!='code'}
             calculate(job, body.get('row_id', job.get('row_id')), decisions)
             return jsonable_encoder(payload(session, job))
         except Exception as exc:

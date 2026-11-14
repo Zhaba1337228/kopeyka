@@ -7,7 +7,7 @@ const money = (value) =>
     ? "—"
     : Number(value).toLocaleString("ru-RU", {
         minimumFractionDigits: 2,
-        maximumFractionDigits: 2,
+        maximumFractionDigits: 6,
       });
 const stamp = (value) =>
   new Date(value).toLocaleString("ru-RU", {
@@ -154,7 +154,7 @@ export function Versions({ workflow, onOpen, busy }) {
             Что изменилось · версия {parent?.version} → {version.version}
           </h2>
           <p className="muted">
-            КФЗ сохранена без изменений. «Совпадает» означает совпадение
+            Оригинал КФЗ сохранён. Подтверждения значений учитываются в новой версии. «Совпадает» означает совпадение
             проверяемых сумм, а не подтверждение полноты отчёта.
           </p>
           <div className="table-wrap">
@@ -210,13 +210,23 @@ export function Versions({ workflow, onOpen, busy }) {
             </table>
           </div>
           <div className="comparison-docs">
+            {comparison.indicators?.length > 0 && <details>
+              <summary>Изменения детальных показателей</summary>
+              <div className="table-wrap"><table>
+                <thead><tr><th>Показатель</th><th>Было</th><th>Стало</th></tr></thead>
+                <tbody>{comparison.indicators.map(r => <tr key={r.code}>
+                  <td>{r.title}<small>{r.unit}</small></td>
+                  {["before","after"].map(k=><td key={k}>{money(r[k].confirmed)}<small>{r[k].status}</small></td>)}
+                </tr>)}</tbody>
+              </table></div>
+            </details>}
             <h3>Новые документы: {comparison.added_documents.length}</h3>
             {comparison.added_documents.map((d, i) => (
               <p key={d.id || i}>
                 <strong>{d.file}</strong>
                 <span>
                   {d.category} ·{" "}
-                  {d.amount == null
+                  {d.indicator_only ? "Подтверждение детальных показателей" : d.amount == null
                     ? "Сумма не прочитана"
                     : money(d.amount) + " ₽"}
                 </span>

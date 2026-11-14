@@ -15,6 +15,8 @@ from .articles import KNOWN_TITLES, explicit_codes, title_for
 from .amounts import read_amounts
 from .coverage import verify_indicators
 from .metadata import contracts_in, normalize_contract
+from .periods import dates_in, missing_months, overlap_groups
+from .report_review import apply_report_decisions
 
 MONTHS = ['январ', 'феврал', 'март', 'апрел', 'ма[йя]', 'июн', 'июл', 'август', 'сентябр', 'октябр', 'ноябр', 'декабр']
 MONTH_LABELS = ['январь', 'февраль', 'март', 'апрель', 'май', 'июнь', 'июль', 'август', 'сентябрь', 'октябрь', 'ноябрь', 'декабрь']
@@ -29,20 +31,9 @@ def _identity_key(record):
 
 
 def _month_period(text):
-    # An explicitly stated service/accounting period takes precedence over invoice date.
-    for number, month in enumerate(MONTHS, 1):
-        match = re.search(r'(?:период\s*[:\-]?|за)\s*(?:полный\s+)?' + month + r'[а-я]*\s+(20\d{2})', text, re.I)
-        if match:
-            year = int(match[1])
-            return date(year, number, 1), date(year, number, calendar.monthrange(year, number)[1]), 'указанный период'
-    match = re.search(r'(?:период\s*[:\-]?|с)\s*(\d{2}\.\d{2}\.20\d{2})\s*(?:по|[-–—])\s*(\d{2}\.\d{2}\.20\d{2})', text, re.I)
-    if match:
-        return _date(match[1]), _date(match[2]), 'указанный период'
-    match = re.search(r'\b\d{2}\.\d{2}\.20\d{2}\b', text)
-    if match:
-        value = _date(match[0])
-        return value, value, 'дата документа (период не указан)'
-    return None, None, None
+    parsed = dates_in(text)
+    return (date.fromisoformat(parsed['period_start']) if parsed['period_start'] else None,
+            date.fromisoformat(parsed['period_end']) if parsed['period_end'] else None, parsed['date_rule'])
 
 
 def _date(value):
@@ -63,11 +54,11 @@ def _metadata(extracted, rules):
     text = extracted['text']
     lines = text.splitlines()
     contracts = set(contracts_in(text))
-    period_start, period_end, date_rule = _month_period(text)
-    document_date_match = re.search(r'\b\d{2}\.\d{2}\.20\d{2}\b', text)
-    document_date = _date(document_date_match[0]).isoformat() if document_date_match else None
-    first = lines[0] if lines else ''
-    number = re.search(r'(?:№\s*|документ\s*:?\s*|записка\s+|расходах\s+ИТ\s+|документ\s+)([A-Za-zА-Яа-я0-9]+(?:[-/][A-Za-zА-Яа-я0-9]+)*)', text, re.I)
+    dates = dates_in(text)
+    own_lines = [line for line in lines if not re.search(r'договор|контракт|соглашени', line, re.I)]
+    titles = [line for line in own_lines if re.match(r'\s*(?:акт|сч[её]т|справка|ведомость|универсальный передаточный|упд|служебная записка)', line, re.I)]
+    first = titles[0] if titles else (own_lines[0] if own_lines else '')
+    number = re.search(r'(?:№\s*|документ\s*:?\s*|записка\s+|расходах\s+ИТ\s+|документ\s+)([A-Za-zА-Яа-я0-9]+(?:[-/][A-Za-zА-Яа-я0-9]+)*)', '\n'.join(titles + own_lines), re.I)
     document_number = number[1].upper() if number else None
     # Avoid treating the literal title "Документ" as a serial number.
     if document_number in ('ДАТА', 'ДОГОВОР'):
@@ -91,7 +82,7 @@ def _metadata(extracted, rules):
             if not counterpart and i + 1 < len(lines):
                 counterpart = lines[i + 1].strip()
             break
-    return {'contract': next(iter(contracts)) if len(contracts) == 1 else None, 'contracts': sorted(contracts), 'period_start': period_start.isoformat() if period_start else None, 'period_end': period_end.isoformat() if period_end else None, 'document_date': document_date, 'date_rule': date_rule, 'number': document_number, 'document_type': document_type, 'counterparty': counterpart or ('Внутренний документ' if extracted['kind'] in ('docx', 'xlsx') else None), 'code': _classify(text, rules)}
+    return {'contract': next(iter(contracts)) if len(contracts) == 1 else None, 'contracts': sorted(contracts), **dates, 'number': document_number, 'document_type': document_type, 'counterparty': counterpart or ('Внутренний документ' if extracted['kind'] in ('docx', 'xlsx') else None), 'code': _classify(text, rules)}
 
 
 def _read_amounts(path, doc_id, extracted, meta):
@@ -110,7 +101,7 @@ def _expected_months(start, end):
     return result
 
 
-def reconcile(kfz_path, document_paths, *, output_dir=None, contract='24/03/15-01', start_date='2026-01-01', end_date='2026-05-31', report_row_id=None, decisions=None, progress=None):
+def reconcile(kfz_path, document_paths, *, output_dir=None, contract='24/03/15-01', start_date='2026-01-01', end_date='2026-05-31', report_row_id=None, decisions=None, report_decisions=None, progress=None):
     out = Path(output_dir) if output_dir else Path(tempfile.mkdtemp(prefix='kfz-'))
     out.mkdir(parents=True, exist_ok=True)
     progress = progress or (lambda fraction, message: None)
@@ -129,6 +120,7 @@ def reconcile(kfz_path, document_paths, *, output_dir=None, contract='24/03/15-0
     selected = next((row for row in candidates if row['id'] == report_row_id), None) if report_row_id else candidates[0]
     if selected is None:
         raise ValueError('Выбранная строка КФЗ не найдена')
+    selected = apply_report_decisions(selected, report_decisions or {})
     articles = dict(selected.get('articles') or {code: title_for(code) for code in selected['values'] if code != 'total'})
     report_reasons = list(selected['errors'])
     if not selected.get('contract'):
@@ -168,6 +160,8 @@ def reconcile(kfz_path, document_paths, *, output_dir=None, contract='24/03/15-0
                 if not isinstance(value,str) or len(value)>300 or not value.strip():
                     raise ValueError('Проверьте реквизиты ручного решения')
                 record[field] = normalize_contract(value) if field=='contract' else value.strip()
+            if {'period_start', 'period_end'} & corrections.keys() and record.get('period_start') and record.get('period_end'):
+                record.update(date_issue=None, date_rule='указанный период')
             if record.get('period_start') and record.get('period_end'):
                 if date.fromisoformat(record['period_start']) > date.fromisoformat(record['period_end']):
                     raise ValueError('Период документа указан в обратном порядке')
@@ -188,11 +182,14 @@ def reconcile(kfz_path, document_paths, *, output_dir=None, contract='24/03/15-0
             record['amount'] = parsed['amount']
             record['evidence_ids'] = parsed['evidence_ids']
             record['amount_candidates'] = parsed['candidates']
+            record['indicator_evidence_ids'] = parsed.get('indicator_evidence_ids', [])
             record['preview_evidence_ids'] = [ev['id'] for ev in parsed['evidence']]
             evidence.update({ev['id']: ev for ev in parsed['evidence']})
             declared = explicit_codes(extracted['text'])
             if exclusion:
                 record.update(status='excluded', reason=exclusion)
+            elif record.get('date_issue'):
+                record.update(status='ambiguous', reason=record['date_issue'])
             elif parsed['reason']:
                 record.update(status='ambiguous',reason=parsed['reason'])
             elif len(declared) > 1 or (declared and record['code'] != declared[0]):
@@ -205,9 +202,9 @@ def reconcile(kfz_path, document_paths, *, output_dir=None, contract='24/03/15-0
                 record.update(reason='Не найден номер документа; требуется проверка')
             elif not record['counterparty']:
                 record.update(reason='Не найден контрагент; требуется проверка реквизитов')
-            elif not record['code']:
+            elif not record['code'] and not record.get('indicator_only'):
                 record.update(reason='Назначение неоднозначно или отсутствует в словаре статей')
-            elif record['code'] not in articles:
+            elif record['code'] not in articles and not record.get('indicator_only'):
                 record.update(reason='Код статьи документа не найден в КФЗ; требуется проверка привязки')
             else:
                 record.update(status='accepted', reason=f"Договор, период и назначение подтверждены; {record['date_rule']}")
@@ -227,7 +224,7 @@ def reconcile(kfz_path, document_paths, *, output_dir=None, contract='24/03/15-0
     for group in semantic_groups.values():
         if len(group) <= 1:
             continue
-        if len({record['amount'] for record in group}) > 1:
+        if len({(record['amount'], tuple(sorted((evidence[ref].get('field'), evidence[ref]['value']) for ref in record.get('indicator_evidence_ids',[])))) for record in group}) > 1:
             for record in group:
                 record.update(status='ambiguous', reason='Конфликт: совпадают реквизиты, но указаны разные суммы')
         else:
@@ -246,11 +243,14 @@ def reconcile(kfz_path, document_paths, *, output_dir=None, contract='24/03/15-0
         if action == 'exclude':
             record.update(status='excluded', reason='Решение проверяющего: ' + decision['reason'])
         elif action == 'include':
-            if record['amount'] is None or decision.get('code') not in articles:
+            detail_only = record.get('indicator_only')
+            if detail_only and (decision.get('code') or not record.get('indicator_evidence_ids')):
+                raise ValueError('Детальный показатель требует подтверждённого источника и не включается в денежную статью')
+            if not detail_only and (record['amount'] is None or decision.get('code') not in articles):
                 raise ValueError('Для включения необходимы прочитанная сумма и допустимая статья')
             if record.get('duplicate_of'):
                 raise ValueError('Нельзя повторно включить дубликат; работайте с исходным документом')
-            record.update(status='accepted', code=decision['code'], reason='Решение проверяющего: ' + decision['reason'])
+            record.update(status='accepted', code=None if detail_only else decision['code'], reason='Решение проверяющего: ' + decision['reason'])
         else:
             raise ValueError('Неизвестное ручное решение')
         record['decision'] = dict(decision)
@@ -262,6 +262,12 @@ def reconcile(kfz_path, document_paths, *, output_dir=None, contract='24/03/15-0
             reviewed_groups.setdefault(_identity_key(record), []).append(record)
     if any(len(group) > 1 for group in reviewed_groups.values()):
         raise ValueError('Совпадают реквизиты нескольких включённых документов. Выберите один документ, остальные исключите с причиной.')
+    recurring = [record for record in documents if record['status']=='accepted' and
+                 (record.get('code') in ('0200','0300') or record.get('indicator_only'))]
+    overlapping = overlap_groups(recurring)
+    for record in recurring:
+        if record['id'] in overlapping:
+            record.update(status='ambiguous', reason='Пересекаются периоды подтверждающих регистров; исключите перекрывающий итог или уточните период, чтобы не задвоить начисления')
     # Rebuild after review: a corrected or excluded assignment must not leave a
     # phantom article in the totals merely because it was a prior suggestion.
     articles = dict(selected.get('articles') or {code: title_for(code) for code in selected['values'] if code != 'total'})
@@ -277,13 +283,12 @@ def reconcile(kfz_path, document_paths, *, output_dir=None, contract='24/03/15-0
         reasons = list(report_reasons)
         if code in selected.get('column_errors', {}):
             reasons.append(selected['column_errors'][code])
-        uncertain = [r for r in documents if r['status'] in ('error', 'ambiguous') and r['code'] in (None, code)]
+        uncertain = [r for r in documents if r['status'] in ('error', 'ambiguous') and r['code'] in (None, code) and not r.get('indicator_only')]
         reasons.extend(f"{r['file']}: {r['reason']}" for r in uncertain)
         if not accepted and code not in ('0200', '0300') and (code not in KNOWN_TITLES or reported is None or money(reported) != 0):
             reasons.append('Нет принятых подтверждающих документов по статье; отсутствие файлов не считается нулевыми расходами')
         if code in ('0200', '0300'):
-            present = {r['period_start'][:7] for r in accepted if r.get('period_start')}
-            missing = [month for month in _expected_months(start, end) if month not in present]
+            missing = missing_months(accepted, _expected_months(start, end), start, end)
             if missing:
                 labels = [f'{MONTH_LABELS[int(v[5:]) - 1]} {v[:4]}' for v in missing]
                 reasons.append('Нет месячных документов: ' + ', '.join(labels))
@@ -310,6 +315,6 @@ def reconcile(kfz_path, document_paths, *, output_dir=None, contract='24/03/15-0
             render_evidence(ev, out / 'evidence')
         except Exception as error:
             ev['render_error'] = str(error)
-    result = {'context': {'contract': contract, 'start_date': str(start), 'end_date': str(end), 'stage': selected['stage'], 'year': start.year, 'report_row_id': selected['id'], 'report_row_label': selected['label']}, 'rows': rows, 'indicators': verify_indicators(selected,documents,evidence,rows,_expected_months(start,end)), 'total': total, 'documents': documents, 'evidence': evidence, 'candidate_rows': [{'id': c['id'], 'label': c['label']} for c in candidates], 'limitations': ['Полнота разовых актов без реестра не проверена. Вывод относится к принятым документам.', 'Статьи определяются по кодам в отчёте и документах. Неоднозначная привязка и непрочитанные суммы требуют уточнения; трудоёмкость не сверяется.', 'Начисления связываются по подписям строк и заголовкам. Объединённая сумма доплат и резерва не подтверждает каждую составляющую отдельно.', 'Детальная разбивка страховых взносов не проверена. Для причины расхождения требуется регистр формирования КФЗ.']}
+    result = {'context': {'contract': contract, 'start_date': str(start), 'end_date': str(end), 'stage': selected['stage'], 'year': start.year, 'report_row_id': selected['id'], 'report_row_label': selected['label']}, 'rows': rows, 'indicators': verify_indicators(selected,documents,evidence,rows,_expected_months(start,end),start,end), 'total': total, 'documents': documents, 'evidence': evidence, 'candidate_rows': [{'id': c['id'], 'label': c['label']} for c in candidates], 'limitations': ['Полнота разовых актов без реестра не проверена. Вывод относится к принятым документам.', 'Статьи и детальные показатели связываются по явным кодам, подписям и единицам. Неоднозначные значения требуют уточнения.', 'Объединённая сумма доплат и резерва не подтверждает каждую составляющую отдельно.', 'Причина расхождения требует регистра формирования КФЗ; совпадение суммы не доказывает полноту комплекта.']}
     progress(1.0, 'Сверка завершена')
     return result

@@ -11,6 +11,10 @@ def normalized(text):
 
 def financial_field(label, context=''):
     text = normalized(label)
+    if re.search(r'трудоемк|чел\.?\s*[-.]?\s*мес|человеко.?месяц', text):
+        return 'labor.total'
+    if re.search(r'материальн\w*\s+затрат|расход\w*\s+материал', text):
+        return 'material.total'
     contribution = bool(re.search(r'взнос', text + ' ' + normalized(context)))
     if re.search(r'база|аванс|справочно|удержан|к выплате', text):
         return None
@@ -19,6 +23,8 @@ def financial_field(label, context=''):
         prefix = '0300' if contribution else '0200'
         extra = bool(re.search(r'дополнительн|доплат', text))
         reserve = bool(re.search(r'резерв', text))
+        if re.search(r'без\s+резерв', text):
+            return prefix + '.without_reserve'
         if extra and reserve:
             return prefix + '.extra_reserve'
         if reserve:
@@ -98,19 +104,32 @@ def component_plan(candidates):
     """Select disjoint semantic components; overlapping/partial splits need review."""
     fields = defaultdict(list)
     for candidate in candidates:
-        if candidate.get('field'):
+        if candidate.get('field') and candidate['field'].split('.')[0] in ('0200', '0300'):
             fields[candidate['field']].append(candidate)
     parents = {field.split('.')[0] for field in fields}
     if len(parents) != 1:
         return None, None, None
     code = next(iter(parents))
     parts = {key.split('.')[1]: values for key, values in fields.items()}
-    if any(len(values) != 1 for values in parts.values()):
-        return code, None, 'Несколько строк одного показателя: уточните итог и детализацию'
+    # Registers often contain one row per employee and a subtotal per column.
+    # Validate subtotals against details, then retain the contributing cells.
+    for field, values in parts.items():
+        totals = [c for c in values if c['rank'] >= 3]
+        details = [c for c in values if c['rank'] < 3]
+        if len(totals) > 1:
+            return code, None, 'Несколько итогов одного показателя; уточните регистр'
+        if totals and details:
+            if any(c['value'] is None for c in values) or sum(decimal_value(c['value']) for c in details) != decimal_value(totals[0]['value']):
+                return code, None, 'Итог показателя противоречит строкам регистра'
+            parts[field] = details
+        elif totals:
+            parts[field] = totals
     if 'main' in parts and 'extra_reserve' in parts and not ({'extra', 'reserve'} & parts.keys()):
-        chosen = [parts['main'][0], parts['extra_reserve'][0]]
+        chosen = parts['main'] + parts['extra_reserve']
     elif {'main', 'extra', 'reserve'} <= parts.keys() and 'extra_reserve' not in parts:
-        chosen = [parts[key][0] for key in ('main', 'extra', 'reserve')]
+        chosen = [c for key in ('main', 'extra', 'reserve') for c in parts[key]]
+    elif {'without_reserve', 'reserve'} <= parts.keys() and not ({'main','extra','extra_reserve'} & parts.keys()):
+        chosen = parts['without_reserve'] + parts['reserve']
     elif 'total' in parts and not (parts.keys() - {'total'}):
         chosen = parts['total']
     elif code == '0200' and {'main','extra'} <= parts.keys() and 'reserve' not in parts:
