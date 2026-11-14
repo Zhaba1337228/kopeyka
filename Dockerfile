@@ -28,7 +28,7 @@ COPY ui/ ./ui/
 COPY .streamlit/ ./.streamlit/
 COPY app.py backend.py README.md ./
 COPY --from=frontend /frontend/dist ./frontend/dist
-RUN useradd --create-home --uid 10001 appuser && chown -R appuser:appuser /app
+RUN useradd --create-home --uid 10001 appuser && mkdir -p /app/runtime && chown -R appuser:appuser /app
 USER appuser
 EXPOSE 8501
 HEALTHCHECK --interval=30s --timeout=5s --start-period=20s CMD python -c "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8501/')"
