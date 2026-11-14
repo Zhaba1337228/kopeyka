@@ -2,9 +2,9 @@
 
 CSS = """
 <style>
-:root { --ink: #15243b; --muted: #57677c; --line: #dce3ed; --blue: #2457d6;
+:root { --ink: #252a2c; --muted: #667372; --line: #dce3e1; --blue: #00a88f;
   --soft: #f3f6fb; --amber: #9b5700; --green: #166348; }
-.stApp { background: #f7f9fc; }
+.stApp { background: #ffffff; }
 .block-container { max-width: 1480px; padding: 2rem 2.75rem 4rem; }
 header[data-testid="stHeader"] { background: transparent; }
 h1,h2,h3 { color: var(--ink); letter-spacing: -.025em; }

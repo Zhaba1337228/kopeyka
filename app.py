@@ -14,7 +14,7 @@ import streamlit as st
 from ui.styles import CSS
 from ui.uploads import stage_uploads
 
-st.set_page_config(page_title="Сверка КФЗ — проверка по документам", page_icon="▦", layout="wide")
+st.set_page_config(page_title="Копейка — сверка КФЗ", page_icon="▦", layout="wide")
 st.markdown(CSS, unsafe_allow_html=True)
 
 DOC_STATUSES = {"accepted": "Принят", "excluded": "Исключён", "error": "Не прочитан", "ambiguous": "Требует решения"}
@@ -142,10 +142,8 @@ def render_source(evidence_id, result, key_prefix="main") -> None:
     source_text = evidence.get("fragment_text") or evidence.get("text") or evidence.get("raw_text")
     if source_text:
         if image_available:
-            with st.expander("Распознанный текст и координаты"):
+            with st.expander("Распознанный текст"):
                 st.text(str(source_text))
-                if evidence.get("bbox"):
-                    st.caption(f"Область на странице: {evidence['bbox']}")
         else:
             st.markdown(f'<div class="evidence-text">{esc(source_text)}</div>', unsafe_allow_html=True)
             st.caption("Текст извлечён из указанного листа, строки таблицы или абзаца.")
@@ -358,13 +356,11 @@ def render_journal(result) -> None:
 
 
 def main() -> None:
-    heading, local = st.columns([4, 1])
+    heading = st.container()
     with heading:
         st.markdown('<div class="eyebrow">Контроль фактических затрат</div>', unsafe_allow_html=True)
-        st.title("Сверка КФЗ")
+        st.title("Копейка")
         st.markdown('<p class="subtitle">От суммы в отчёте — к каждому подтверждающему документу.</p>', unsafe_allow_html=True)
-    with local:
-        st.markdown('<div class="local-tag">Локальная обработка</div>', unsafe_allow_html=True)
     result = st.session_state.get("result")
     render_uploads(bool(result))
     if st.session_state.get("run_error"):
