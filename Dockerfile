@@ -1,11 +1,11 @@
-FROM node:22-slim AS frontend
+FROM node:22-slim@sha256:e9f565d32859f0cbfb52125eafe8be39390f24dac302dc3cdf566e8ba3ab21ee AS frontend
 WORKDIR /frontend
 COPY frontend/package*.json ./
 RUN npm ci
 COPY frontend/ ./
 RUN npm run build
 
-FROM python:3.11-slim-bookworm
+FROM python:3.11-slim-bookworm@sha256:a83ba18aef0f865b1a4a611c2cf460fe446f2795673bbb9fe43be570439e3b39
 
 ENV PYTHONUNBUFFERED=1 \
     PYTHONDONTWRITEBYTECODE=1 \
@@ -19,8 +19,9 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 
 WORKDIR /app
 COPY requirements.txt ./
+COPY requirements.lock ./
 RUN pip install uv==0.9.9 \
-    && uv pip install --system --no-cache -r requirements.txt \
+    && uv pip install --system --no-cache -r requirements.lock \
     && pip uninstall -y uv
 COPY kfz_core/ ./kfz_core/
 COPY config/ ./config/

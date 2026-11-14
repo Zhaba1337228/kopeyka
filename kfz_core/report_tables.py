@@ -5,7 +5,8 @@ import fitz
 
 from .articles import title_for
 from .extract import make_evidence, ocr_image
-from .money import MONEY_PATTERN, amount_text, money, unit_multiplier
+from .money import MONEY_PATTERN, amount_text, scaled_money, resolve_units
+from .metadata import contracts_in
 
 
 def word_lines(words):
@@ -42,8 +43,10 @@ def table_rows(path, page, image, scale, year, doc_id, *, use_ocr=False):
         return None
     lines = word_lines(words)
     text = '\n'.join(line['text'] for line in lines)
-    if not re.search(r'3\s*(?:этап|зтап)\s*[,;:]?\s*' + str(year), text, re.I):
+    stages = set(re.findall(r'(\d{1,3})\s*(?:этап|зтап)\s*[,;:]?\s*' + str(year), text, re.I))
+    if len(stages) != 1:
         return None
+    stage = int(next(iter(stages)))
     coded = [(line, re.match(r'^\s*(\d{4})\b\s*(.*)', line['text'])) for line in lines]
     coded = [(line, match) for line, match in coded if match and match[1] != str(year)]
     # An explicit row-table header distinguishes article codes from arbitrary numbers.
@@ -52,13 +55,15 @@ def table_rows(path, page, image, scale, year, doc_id, *, use_ocr=False):
     if not coded or len(amount_headers) != 1:
         return None
     amount_left = amount_headers[0][0] - 5
-    contracts = set(re.sub(r'\s+', '', v).replace('–', '-') for v in re.findall(r'\d{2}\s*/\s*\d{2}\s*/\s*\d{2}\s*[-–]\s*\d{2}', text))
-    candidate = {'id': f'p{page}-table', 'label': f'3 этап, {year} г. (страница {page}, статьи по строкам)',
-                 'page': page, 'year': year, 'stage': 3, 'contract': next(iter(contracts)) if len(contracts)==1 else None,
+    contracts = contracts_in(text)
+    candidate = {'id': f'p{page}-table', 'label': f'{stage} этап, {year} г. (страница {page}, статьи по строкам)',
+                 'page': page, 'year': year, 'stage': stage, 'contract': next(iter(contracts)) if len(contracts)==1 else None,
                  'contract_text': text, 'values': {}, 'evidence': {}, 'errors': [], 'column_errors': {}, 'articles': {}}
     first_y = min(line['bbox'][1] for line, _ in coded)
     header = '\n'.join(line['text'] for line in lines if line['bbox'][1] < first_y)
-    multiplier = unit_multiplier(header)
+    multiplier, unit_error = resolve_units(header)
+    if unit_error:
+        candidate['errors'].append(unit_error)
     for line, match in coded:
         code = match[1]
         value_text = ' '.join(word[4] for word in line['words'] if word[0] >= amount_left)
@@ -71,18 +76,18 @@ def table_rows(path, page, image, scale, year, doc_id, *, use_ocr=False):
             candidate['column_errors'][code] = 'Код статьи встречается в нескольких строках; требуется уточнение'
             continue
         candidate['values'][code] = None
-        if len(amounts) != 1:
+        if len(amounts) != 1 or unit_error:
             candidate['column_errors'][code] = 'Нет единственной денежной суммы в строке статьи'
             continue
-        value = amount_text(money(amounts[0][0])*multiplier)
+        value = amount_text(scaled_money(amounts[0][0],multiplier))
         candidate['values'][code] = value
         ev = make_evidence(path, doc_id, dict(line, page=page), value, f'КФЗ · статья {code}', f'{candidate["id"]}-{code}')
         ev['report'] = True
         candidate['evidence'][code] = ev
     totals = [line for line in lines if re.match(r'^\s*(?:итого|всего)\b', line['text'], re.I)]
     candidate['values']['total'] = None
-    if len(totals) == 1 and len(MONEY_PATTERN.findall(totals[0]['text'])) == 1:
-        value = amount_text(money(MONEY_PATTERN.findall(totals[0]['text'])[0])*multiplier)
+    if len(totals) == 1 and len(MONEY_PATTERN.findall(totals[0]['text'])) == 1 and not unit_error:
+        value = amount_text(scaled_money(MONEY_PATTERN.findall(totals[0]['text'])[0],multiplier))
         candidate['values']['total'] = value
         ev = make_evidence(path, doc_id, dict(totals[0], page=page), value, 'Итог КФЗ', f'{candidate["id"]}-total')
         ev['report'] = True

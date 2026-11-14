@@ -8,6 +8,9 @@
 !frontend/**
 frontend/node_modules/
 frontend/dist/
+frontend/test-results*/
+frontend/playwright-report/
+!requirements.lock
 !kfz_core/
 !kfz_core/**
 !config/

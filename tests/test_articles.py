@@ -130,7 +130,7 @@ class NewArticlesTests(unittest.TestCase):
         book.active.append(['Договор 24/03/15-01', 'Статья 0400', 'Неизвестная форма'])
         book.save(path)
         result = self.run_check([*self.documents, path])
-        self.assertEqual(result['documents'][-1]['status'], 'error')
+        self.assertEqual(result['documents'][-1]['status'], 'ambiguous')
         self.assertEqual(result['rows'][0]['status'], 'Недостаточно данных')
 
     def test_reviewed_assignment_does_not_leave_a_phantom_article(self):

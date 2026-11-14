@@ -20,6 +20,10 @@ def category(document):
     if document.get('status') == 'error':
         return 'Ошибка чтения'
     if document.get('status') == 'ambiguous':
+        if 'единиц' in reason:
+            return 'Единицы измерения'
+        if 'сумм' in reason or 'итог' in reason:
+            return 'Неоднозначная сумма'
         return 'Неоднозначная связь'
     if document.get('decision'):
         return 'Ручное решение'
@@ -37,10 +41,11 @@ def location(evidence):
 def build_review(result):
     counts = Counter(r['status'] for r in result['rows'])
     matched, mismatch, unknown = (counts[s] for s in ('Совпадает', 'Расхождение', 'Недостаточно данных'))
-    if mismatch:
+    detail_counts = Counter(r['status'] for r in result.get('indicators',[]))
+    if mismatch or detail_counts['Расхождение']:
         conclusion = 'В проверенных статьях найдены расхождения. Достоверность отчёта в проверяемом объёме не подтверждена.'
-    elif unknown or result.get('total', {}).get('status') == 'Недостаточно данных':
-        conclusion = 'Данных недостаточно для заключения по всем проверяемым статьям.'
+    elif unknown or detail_counts['Недостаточно данных'] or result.get('total', {}).get('status') == 'Недостаточно данных':
+        conclusion = 'Данных недостаточно для заключения по всем показателям отчёта.'
     elif result.get('total', {}).get('status') == 'Расхождение':
         conclusion = 'Суммы статей согласуются с документами, но общий итог отчёта требует уточнения.'
     else:
@@ -101,6 +106,7 @@ def build_review(result):
                              'report_source': report_source, 'actions': actions, 'subject': subject, 'request_text': text}
     return {'conclusion': conclusion, 'counts': {'matched': matched, 'mismatch': mismatch, 'unverified': unknown},
             'scope': 'Статьи в сверке: ' + ', '.join(r['code'] for r in result['rows']) + '. Полнота комплекта и показатели вне этой таблицы не подтверждены.',
+            'indicator_counts':{'matched':detail_counts['Совпадает'],'mismatch':detail_counts['Расхождение'],'unverified':detail_counts['Недостаточно данных']},
             'rows': rows, 'document_issues': excluded}
 
 

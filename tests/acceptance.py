@@ -99,6 +99,16 @@ def check_baseline(result, expected, output_dir):
     assert len([d for d in documents if d["status"] == "accepted"]) == 19
     assert result.get("limitations"), "Не отмечены непроверяемые показатели"
     check_evidence(result, rows["0800"], output_dir)
+    details = {r['code']:r for r in result.get('indicators',[])}
+    assert len(details)==11, 'Детальные показатели исходной формы потеряны'
+    assert details['detail-3']['reported']=='34.14'
+    assert details['detail-3']['confirmed'] is None
+    assert details['detail-3']['status']=='Недостаточно данных'
+    for code,amount in [('detail-7','5054470.26'),('detail-extra-reserve','504004.57')]:
+        assert details[code]['reported']==details[code]['confirmed']==amount
+        assert details[code]['status']=='Совпадает'
+    assert all(not r['included_in_total'] for r in details.values())
+    assert all(r['report_evidence_ids'] for r in details.values())
 
 
 def signature(result):

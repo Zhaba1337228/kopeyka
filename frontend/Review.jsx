@@ -59,14 +59,30 @@ export function Conclusion({ result, session }) {
             Не проверены полностью <b>{review.counts.unverified}</b>
           </span>
         </div>
+        {result.indicators?.length > 0 && (
+          <p>
+            Другие показатели: совпадают {review.indicator_counts?.matched || 0}
+            , расхождения {review.indicator_counts?.mismatch || 0}, не проверены
+            полностью {review.indicator_counts?.unverified || 0}.
+          </p>
+        )}
       </div>
-      <a
-        className="review-download"
-        href={`/api/session/${session}/conclusion`}
-      >
-        <Icon name="file" />
-        Скачать заключение
-      </a>
+      <div className="conclusion-downloads">
+        <a
+          className="review-download"
+          href={`/api/session/${session}/conclusion`}
+        >
+          <Icon name="file" />
+          Скачать заключение
+        </a>
+        <a
+          className="review-download"
+          href={`/api/session/${session}/conclusion.xlsx`}
+        >
+          <Icon name="file" />
+          Скачать Excel
+        </a>
+      </div>
     </section>
   );
 }

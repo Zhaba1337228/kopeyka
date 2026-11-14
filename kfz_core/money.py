@@ -5,27 +5,50 @@ from decimal import Decimal, ROUND_HALF_UP
 CENT = Decimal('0.01')
 
 
-def money(value):
+def decimal_value(value):
     if isinstance(value, Decimal):
-        return value.quantize(CENT, rounding=ROUND_HALF_UP)
+        return value
     if value is None:
         raise ValueError('Денежное значение отсутствует')
     text = str(value).strip().replace('\u00a0', '').replace('\u202f', '').replace(' ', '')
     negative = text.startswith('(') and text.endswith(')')
-    text = re.sub(r'[^\d.,+−-]', '', text).replace('−', '-')
+    text = re.sub(r'(?i)(?:руб(?:лей|ля|ль)?\.?|₽)$', '', text).strip()
+    if negative:
+        text = text[1:-1]
+    text = text.replace('−', '-').replace('–', '-').replace('—', '-')
     if ',' in text:
         text = text.replace('.', '').replace(',', '.')
-    if not text or text in ('-', '+'):
+    if not re.fullmatch(r'[+-]?\d+(?:\.\d+)?', text):
         raise ValueError(f'Не удалось прочитать сумму: {value}')
-    result = Decimal(text).quantize(CENT, rounding=ROUND_HALF_UP)
+    result = Decimal(text)
     return -result if negative else result
+
+
+def money(value):
+    return decimal_value(value).quantize(CENT, rounding=ROUND_HALF_UP)
+
+
+def scaled_money(value, multiplier=1):
+    return (decimal_value(value) * Decimal(str(multiplier))).quantize(CENT, rounding=ROUND_HALF_UP)
 
 
 def amount_text(value):
     return format(money(value), '.2f')
 
 
-MONEY_PATTERN = re.compile(r'(?<![\d/.])\(?[-−]?\d(?:[\d \u00a0\u202f]*\d)?[,.]\d{2}(?!\d)\)?')
+MONEY_PATTERN = re.compile(r'(?<![\d/.])\(?[-−–—]?\d(?:[\d \u00a0\u202f]*\d)?[,.]\d{2,6}(?!\d)\)?')
+
+
+def unit_values(text):
+    return {Decimal('1000000') if m[1] and m[1].lower() == 'млн' else Decimal('1000') if m[1] else Decimal('1')
+            for m in re.finditer(r'(?i)\b(?:(тыс|млн)\.?\s*)?(?:руб(?:лей|ля|ль)?\.?)(?![а-я])|₽', text)}
+
+
+def resolve_units(*contexts):
+    values = set().union(*(unit_values(text or '') for text in contexts))
+    if len(values) > 1:
+        return None, 'Противоречивые единицы измерения: подтвердите рубли, тысячи или миллионы'
+    return next(iter(values), Decimal('1')), None
 
 
 def unit_multiplier(text):

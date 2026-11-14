@@ -16,7 +16,7 @@ from fastapi.encoders import jsonable_encoder
 from starlette.concurrency import run_in_threadpool
 
 from kfz_core import reconcile, ReportSelectionRequired
-from kfz_core.review import build_review, compare_results, rub
+from kfz_core.review import build_review, compare_results, rub, location
 from ui.uploads import stage_uploads
 
 app = FastAPI()
@@ -118,6 +118,13 @@ def history(request: Request):
                    if j.get('owner') == request.state.owner], key=lambda j: j['created'], reverse=True)
 
 
+@app.get('/api/demo')
+def demo():
+    from kfz_core.demo import demo_bundle
+    return Response(demo_bundle(),media_type='application/zip',
+                    headers={'Content-Disposition':'attachment; filename="kopeyka-demo.zip"'})
+
+
 @app.get('/api/session/{session}')
 def restore(session: str, request: Request):
     job = owned(session, request)
@@ -145,7 +152,7 @@ def calculate(job, row_id=None, decisions=None):
     result['documents'].extend(job['journal'])
     failures = [d['file'] for d in job['journal'] if d['status'] == 'error']
     if failures:
-        for row in [*result['rows'], result['total']]:
+        for row in [*result['rows'], *result.get('indicators', []), result['total']]:
             row['status'] = 'Недостаточно данных'
             row.setdefault('reasons', []).append('Часть комплекта не прочитана: ' + ', '.join(failures))
     job['result'] = result
@@ -265,6 +272,16 @@ def evidence(session: str, evidence_id: str, kind: str, request: Request):
     return FileResponse(path, filename=path.name if kind == 'original' else None)
 
 
+@app.get('/api/session/{session}/documents/{document_id}/original')
+def original_document(session: str, document_id: str, request: Request):
+    job = owned(session, request)
+    document = next((d for d in job.get('result',{}).get('documents',[]) if d.get('id')==document_id),None)
+    path = Path(document['path']) if document and document.get('path') else None
+    if not path or not path.is_file() or not path.resolve().is_relative_to(job['base'].resolve()):
+        raise HTTPException(404,'Документ недоступен')
+    return FileResponse(path,filename=path.name)
+
+
 @app.get('/api/session/{session}/conclusion')
 def conclusion(session: str, request: Request):
     job = owned(session, request)
@@ -274,6 +291,10 @@ def conclusion(session: str, request: Request):
     review = build_review(result)
     lines = ['КОПЕЙКА — ЗАКЛЮЧЕНИЕ ПО СВЕРКЕ', f"Версия {job.get('version', 1)} от {job['created']}",
              f"Договор {job['contract']}; период {job['start']} — {job['end']}", '', review['conclusion'], review['scope'], '']
+    lines += [f"Статьи: совпадают {review['counts']['matched']}; расхождения {review['counts']['mismatch']}; не проверены полностью {review['counts']['unverified']}",
+              f"Этап: {result['context'].get('stage', 'не определён')}",
+              f"ОБЩИЙ ИТОГ: КФЗ {rub(result['total']['reported'])}; подтверждено {rub(result['total']['confirmed'])}; разница {rub(result['total']['difference'])}",
+              'Статус итога: '+result['total']['status'], *result['total'].get('reasons',[]), '']
     for row in result['rows']:
         item = review['rows'][row['code']]
         lines += [f"{row['code']} {row['title']} — {row['status']}",
@@ -281,11 +302,28 @@ def conclusion(session: str, request: Request):
                   'Категория: ' + ', '.join(item['categories']), item['statement'], item['cause'],
                   'КФЗ: ' + item['report_source'], *[f"Источник: {s['location']} — {rub(s['value'])}" for s in item['sources']],
                   *row.get('reasons', []), '']
+    lines += ['ДРУГИЕ ПОКАЗАТЕЛИ — НЕ СУММИРУЮТСЯ ПОВТОРНО']
+    for item in result.get('indicators',[]):
+        lines += [f"{item['title']} ({item['unit']}): {item['status']}",
+                  'КФЗ: '+(item['reported'] or 'не определено')+'; подтверждено: '+(item['confirmed'] or 'не определено')+'; разница: '+(item['difference'] or 'не определено'),
+                  *item['reasons'],
+                  *[f"Источник: {location(result['evidence'][ref])} — {result['evidence'][ref].get('label','')}" for ref in item.get('report_evidence_ids',[])+item['evidence_ids']], '']
     lines += ['ИСКЛЮЧЕНИЯ И НЕПРОВЕРЕННЫЕ ДОКУМЕНТЫ',
               *[f"{d['file']} — {d['category']}: {d['reason']}" for d in review['document_issues']], '',
               'ОГРАНИЧЕНИЯ', *result.get('limitations', [])]
     return Response('\ufeff' + '\n'.join(lines), media_type='text/plain; charset=utf-8',
                     headers={'Content-Disposition': f'attachment; filename="kopeyka-conclusion-v{job.get("version", 1)}.txt"'})
+
+
+@app.get('/api/session/{session}/conclusion.xlsx')
+def conclusion_excel(session: str, request: Request):
+    from kfz_core.export import workbook_bytes
+    job = owned(session, request)
+    if not job.get('result'):
+        raise HTTPException(409,'Проверка ещё не завершена')
+    return Response(workbook_bytes(job['result'],version=job.get('version',1),created=job['created']),
+                    media_type='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+                    headers={'Content-Disposition':f'attachment; filename="kopeyka-conclusion-v{job.get("version",1)}.xlsx"'})
 
 
 if Path('frontend/dist').is_dir():

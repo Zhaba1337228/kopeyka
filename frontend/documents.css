@@ -1,0 +1,175 @@
+.document-review,
+.coverage {
+  margin-top: 28px;
+  padding: 24px;
+  background: #fff;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+}
+.coverage > summary {
+  cursor: pointer;
+  font-weight: 600;
+  line-height: 1.6;
+}
+.document-review-head {
+  display: flex;
+  justify-content: space-between;
+  gap: 20px;
+  align-items: start;
+  margin-bottom: 20px;
+}
+.document-review-head h2 {
+  overflow-wrap: anywhere;
+}
+.document-review-head p {
+  color: var(--muted);
+  font-size: 14px;
+}
+.document-review-head a {
+  white-space: nowrap;
+  color: var(--accent);
+  font-size: 13px;
+}
+.document-review-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 1.2fr) minmax(0, 1fr);
+  gap: 28px;
+}
+.document-review label {
+  display: block;
+  font-size: 14px;
+  margin: 16px 0 8px;
+}
+.document-review select,
+.document-review input:not([type="checkbox"]),
+.document-review textarea {
+  width: 100%;
+  max-width: 100%;
+  font: inherit;
+  font-size: 14px;
+  padding: 10px;
+  border: 1px solid #cbd8cb;
+  border-radius: 6px;
+  background: white;
+  min-height: 44px;
+  color: #293731;
+}
+.document-review select {
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.document-review textarea {
+  resize: vertical;
+}
+.document-review .confirm-amount {
+  display: flex;
+  align-items: start;
+  gap: 10px;
+  line-height: 1.5;
+}
+.confirm-amount input {
+  width: 20px;
+  height: 20px;
+  flex-shrink: 0;
+  accent-color: var(--accent);
+}
+.document-review button.primary {
+  margin-top: 16px;
+}
+.review-source {
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  margin-top: 18px;
+  overflow: hidden;
+}
+.review-source .subhead {
+  gap: 12px;
+}
+.review-source > p,
+.review-source > pre {
+  padding: 0 16px;
+}
+.review-source img {
+  display: block;
+  max-width: 100%;
+  height: auto;
+}
+.review-source pre {
+  font:
+    14px/1.7 "Segoe UI",
+    sans-serif;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+.source-conversion {
+  font-size: 13px;
+  color: #526b53;
+  line-height: 1.7;
+}
+.metadata-editor {
+  margin-top: 20px;
+  padding-top: 16px;
+  border-top: 1px solid var(--border);
+}
+.metadata-editor summary {
+  cursor: pointer;
+  font-size: 14px;
+  color: var(--accent);
+}
+.coverage td small {
+  display: block;
+  color: var(--muted);
+  font-size: 12px;
+  margin-top: 6px;
+}
+.coverage td:last-child {
+  min-width: 240px;
+}
+.coverage-sources {
+  display: flex;
+  flex-direction: column;
+  align-items: start;
+  margin-top: 8px;
+}
+.coverage-sources button {
+  text-align: left;
+  overflow-wrap: anywhere;
+}
+.coverage table {
+  min-width: 700px;
+}
+.coverage .review-source {
+  max-width: 850px;
+}
+textarea:focus-visible,
+select:focus-visible {
+  outline: 3px solid #a7c3a0;
+  outline-offset: 2px;
+}
+@media (max-width: 1000px) {
+  .document-review-grid {
+    grid-template-columns: 1fr;
+  }
+  .document-review-head {
+    flex-direction: column;
+  }
+}
+@media (max-width: 600px) {
+  .document-review,
+  .coverage {
+    padding: 16px;
+  }
+  .document-review .subhead {
+    flex-direction: column;
+    align-items: start;
+  }
+  .document-review h2 {
+    font-size: 17px;
+  }
+}
+.conclusion-downloads {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  flex-shrink: 0;
+}

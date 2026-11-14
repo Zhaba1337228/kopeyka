@@ -15,10 +15,10 @@ test('unseen articles, manual classification and new article in a version',async
   await expect(page.getByRole('button',{name:'0400 Тестовая статья 4',exact:true})).toBeVisible();
   await expect(page.locator('.review-conclusion')).toContainText('0400, 0500, 0600, 0700');
   await page.getByRole('button',{name:/^Документы/}).click();
-  await page.getByLabel('Документ',{exact:true}).selectOption({label:'0400.docx'});
-  await page.getByLabel('Решение',{exact:true}).selectOption('0400');
-  await page.getByLabel('Основание',{exact:true}).fill('Статья подтверждена проверяющим по регистру');
-  await page.getByRole('button',{name:'Сохранить и пересчитать'}).click();
+  await page.getByRole('button',{name:'0400.docx',exact:true}).click();
+  await page.getByLabel('Статья',{exact:true}).selectOption('0400');
+  await page.getByLabel('Основание решения',{exact:true}).fill('Статья подтверждена проверяющим по регистру');
+  await page.getByRole('button',{name:'Подтвердить и пересчитать'}).click();
   await expect(page.getByRole('heading',{name:'Что изменилось · версия 1 → 2'})).toBeVisible({timeout:120000});
   await expect(page.locator('.review-conclusion')).toContainText('Суммы проверяемых статей согласуются');
   await page.getByRole('tab',{name:'3. Добавить ответ'}).click();

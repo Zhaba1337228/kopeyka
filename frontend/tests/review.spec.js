@@ -83,6 +83,14 @@ test("explain, save a request, append a document and reopen immutable versions",
     .locator(".comparison-table tr")
     .filter({ hasText: "0800" });
   await expect(other).toContainText("Без изменений");
+  await expect(page.getByLabel('Версия сверки',{exact:true})).toHaveCount(1);
+  await page.locator('.coverage > summary').click();
+  await expect(page.locator('.coverage tbody tr')).toHaveCount(11);
+  const mainSalary=page.locator('.coverage tbody tr').filter({hasText:'Основная заработная плата'});
+  await expect(mainSalary).toContainText('Совпадает');
+  await mainSalary.getByRole('button').first().click();
+  await expect(page.locator('.coverage .review-source img')).toBeVisible();
+  await page.locator('.coverage > summary').click();
   await page.screenshot({
     path: "../outputs/review-comparison.png",
     fullPage: true,
